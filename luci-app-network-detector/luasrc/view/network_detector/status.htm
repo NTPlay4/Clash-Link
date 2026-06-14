@@ -216,7 +216,7 @@ LuCI View 模板 - 网络检测器状态页
             </div>
             <div class="nd-status-sub">
                 <% if enabled == "1" then %>
-                    检测间隔 <%= interval_text %> &nbsp;|&nbsp; 日志保留 <%= logdays %> 天
+                    检测间隔 <%= interval_text %> &nbsp;|&nbsp; 日志保留 <%= logdays %> 天 &nbsp;|&nbsp; v<%= fs.readfile("/usr/share/network-detector/version"):gsub("\n","") or "?" %>
                 <% else %>
                     服务已禁用，请前往设置页面启用
                 <% end %>

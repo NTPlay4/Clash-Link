@@ -5,7 +5,8 @@ LuCI CBI 配置模型 - 网络检测器
 
 local m, s, o
 
-m = Map("network-detector", translate("网络检测器"),
+local ver = luci.sys.exec("cat /usr/share/network-detector/version 2>/dev/null"):match("^(%S+)") or ""
+m = Map("network-detector", translate("网络检测器") .. (ver ~= "" and (" v" .. ver) or ""),
         translate("基于Clash代理的网络可达性检测工具，支持自动节点切换与Webhook通知。"))
 
 -- 保存后自动重载服务

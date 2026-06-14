@@ -5,7 +5,7 @@ $ErrorActionPreference = "Stop"
 
 $OUTDIR = "$PSScriptRoot\output"
 $TMPDIR = "$PSScriptRoot\tmp_build"
-$VERSION = "1.0.1"
+$VERSION = "1.0.3"
 $RELEASE = "1"
 
 # 仅清理临时构建目录，保留 output 中的旧版本
@@ -163,7 +163,8 @@ function Build-IPK {
     param(
         [string]$PackageName,  [string]$Version, [string]$Architecture,
         [string]$Section,      [string]$Depends,  [string]$Description,
-        [string]$SourceDir,    [string]$PostinstScript, [string]$PrermScript
+        [string]$SourceDir,    [string]$PostinstScript, [string]$PrermScript,
+        [string[]]$Conffiles
     )
     $pkgdir  = "$TMPDIR\$PackageName"
     $ctldir  = "$pkgdir\CONTROL"
@@ -182,6 +183,10 @@ Depends: $Depends
 Description: $Description
 "@
     Write-UnixFile -Path "$ctldir\control" -Content $control
+
+    if ($Conffiles -and $Conffiles.Count -gt 0) {
+        Write-UnixFile -Path "$ctldir\conffiles" -Content ($Conffiles -join "`n")
+    }
 
     if ($PostinstScript) { Copy-Item $PostinstScript "$ctldir\postinst" }
     if ($PrermScript)    { Copy-Item $PrermScript    "$ctldir\prerm" }
@@ -236,6 +241,10 @@ New-Item -ItemType Directory -Force "$merged\etc\uci-defaults" | Out-Null
 Copy-Item -Recurse -Force "$PSScriptRoot\luci-app-network-detector\root\etc\uci-defaults\*" "$merged\etc\uci-defaults"
 ConvertTo-UnixLFRecursive -Dir "$merged\etc\uci-defaults"
 
+# 4) 版本号文件（供 LuCI 页面读取）
+New-Item -ItemType Directory -Force "$merged\usr\share\network-detector" | Out-Null
+Write-UnixFile -Path "$merged\usr\share\network-detector\version" -Content $VERSION
+
 # ============================================================
 # postinst - 安装后启用服务
 # ============================================================
@@ -287,7 +296,8 @@ Build-IPK `
     -Description "Network Detector with LuCI UI - Clash proxy health check, auto node switching, webhook notification" `
     -SourceDir $merged `
     -PostinstScript $postinst_path `
-    -PrermScript $prerm_path
+    -PrermScript $prerm_path `
+    -Conffiles @("/etc/config/network-detector")
 
 # ============================================================
 # 验证

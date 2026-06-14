@@ -288,6 +288,9 @@ run_single_task() {
                 -d "{\"name\":\"${TARGET_NODE}\"}" \
                 "${CLASH_API}/proxies/${ENCODED_GROUP}"
 
+            # 更新当前节点引用，后续恢复日志和 Webhook 通知依赖此变量
+            CURRENT_NODE="$TARGET_NODE"
+
             # 记录已切换（不在此处通知，等下次成功访问后再通知）
             switched=1
             try_count=$((try_count + 1))
