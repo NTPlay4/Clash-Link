@@ -52,6 +52,8 @@ d:/openwrt/
 │           └── uci-defaults/
 │               └── 99-luci-network-detector  # 首次安装初始化
 │
+
+```
 ## 使用方法
 
 ### Web 界面
@@ -78,15 +80,22 @@ d:/openwrt/
 
 ```bash
 # 启动服务
+```
 /etc/init.d/network-detector start
+```
 
 # 停止服务
+```
 /etc/init.d/network-detector stop
+```
 
 # 重启服务
+```
 /etc/init.d/network-detector restart
+```
 
 # 手动运行一次
+```
 /usr/bin/network-detector
 ```
 
