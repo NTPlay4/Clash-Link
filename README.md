@@ -78,7 +78,6 @@ d:/openwrt/
 
 ### 手动控制
 
-```bash
 # 启动服务
 ```
 /etc/init.d/network-detector start
