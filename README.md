@@ -74,13 +74,19 @@ d:/openwrt/
 ### 手动控制
 
 # 启动服务
+```
 /etc/init.d/network-detector start
+```
 
 # 停止服务
+```
 /etc/init.d/network-detector stop
+```
 
 # 重启服务
+```
 /etc/init.d/network-detector restart
+```
 
 # 手动运行一次
 ```
