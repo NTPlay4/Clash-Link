@@ -9,6 +9,21 @@ LuCI View 模板 - 网络检测器状态页
     local uci = require("luci.model.uci").cursor()
     local fs  = require("nixio.fs")
     local sys = require("luci.sys")
+
+    -- 读取当日计数器
+    local counters = {}
+    local counter_file = "/var/lib/network-detector/counters"
+    local today = os.date("%Y-%m-%d")
+    local f_ctr = io.open(counter_file, "r")
+    if f_ctr then
+        for line in f_ctr:lines() do
+            local name, date, rec, fail = line:match("^([^|]*)|([^|]*)|([^|]*)|([^|]*)$")
+            if name and date and rec and fail and date == today then
+                counters[name] = { reconnect = tonumber(rec) or 0, fail = tonumber(fail) or 0 }
+            end
+        end
+        f_ctr:close()
+    end
 %>
 
 <style type="text/css">
@@ -111,6 +126,14 @@ LuCI View 模板 - 网络检测器状态页
 }
 .nd-task-badge.on  { background:#d5f5e3; color:#1e8449; }
 .nd-task-badge.off { background:#fadbd8; color:#c0392b; }
+
+/* --- 任务计数徽章 --- */
+.nd-task-stats { display:flex; gap:10px; flex-shrink:0; align-items:center; }
+.nd-stat-item { text-align:center; min-width:40px; }
+.nd-stat-val { font-size:18px; font-weight:700; line-height:1; }
+.nd-stat-val.reconnect { color:#27ae60; }
+.nd-stat-val.fail     { color:#e74c3c; }
+.nd-stat-lbl { font-size:10px; color:#999; margin-top:2px; }
 
 /* --- 日志区域 --- */
 .nd-log-wrap { margin-bottom:18px; }
@@ -263,6 +286,9 @@ LuCI View 模板 - 网络检测器状态页
                 local is_on = (s.enabled ~= "0")
                 local icon  = is_on and "&#x2713;" or "&#x2717;"
     %>
+    <%
+                local c = counters[s.name or ""] or { reconnect = 0, fail = 0 }
+    %>
     <div class="nd-task-card<%= is_on and '' or ' disabled' %>">
         <div class="nd-task-icon <%= is_on and 'on' or 'off' %>"><%= icon %></div>
         <div class="nd-task-body">
@@ -277,6 +303,16 @@ LuCI View 模板 - 网络检测器状态页
                 <% end %>
             </div>
             <span class="nd-task-url" title="<%= s.test_url or '' %>">检测URL: <%= s.test_url or "-" %></span>
+        </div>
+        <div class="nd-task-stats" id="stats-<%= s.name or '' %>">
+            <div class="nd-stat-item">
+                <div class="nd-stat-val reconnect"><%= c.reconnect %></div>
+                <div class="nd-stat-lbl">切换次数</div>
+            </div>
+            <div class="nd-stat-item">
+                <div class="nd-stat-val fail"><%= c.fail %></div>
+                <div class="nd-stat-lbl">失败次数</div>
+            </div>
         </div>
         <span class="nd-task-badge <%= is_on and 'on' or 'off' %>">
             <%= is_on and '启用' or '已禁用' %>
@@ -445,6 +481,40 @@ function fetchLog() {
 }
 
 setInterval(fetchLog, 5000);
+
+// ====== 计数器定时刷新 (每 15 秒) ======
+var ctrUrl = window.location.href.replace(/\/(settings|status)(\?.*)?(#.*)?$/, '/counters?_=' + Date.now());
+function fetchCounters() {
+    var url = ctrUrl.replace(/_=\d+/, '_=' + Date.now());
+    var xhr = new XMLHttpRequest();
+    xhr.open('GET', url, true);
+    xhr.onload = function() {
+        if(xhr.status == 200) {
+            try {
+                var data = JSON.parse(xhr.responseText);
+                for(var taskName in data) {
+                    var el = document.getElementById('stats-' + taskName);
+                    if(!el) {
+                        // 尝试查找未命名任务
+                        if(taskName === '未命名任务') {
+                            el = document.querySelector('[id^="stats-"]');
+                        }
+                    }
+                    if(el) {
+                        var vals = el.querySelectorAll('.nd-stat-val');
+                        if(vals.length >= 2) {
+                            vals[0].textContent = data[taskName].reconnect;
+                            vals[1].textContent = data[taskName].fail;
+                        }
+                    }
+                }
+            } catch(e) {}
+        }
+    };
+    xhr.send();
+}
+setInterval(fetchCounters, 15000);
+
 </script>
 
 <%+footer%>

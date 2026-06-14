@@ -5,6 +5,7 @@
 #
 
 LOG_FILE="/var/log/network-detector.log"
+COUNTER_FILE="/var/lib/network-detector/counters"
 
 # =============================================================
 # 从 UCI 读取全局配置
@@ -107,6 +108,58 @@ log() {
     local prefix=""
     [ -n "$task_name" ] && prefix="[$task_name] "
     echo "$(date '+%Y-%m-%d %H:%M:%S') ${prefix}${msg}" | tee -a "$LOG_FILE"
+}
+
+# =============================================================
+# 当日计数器：reconnect（切换后恢复成功）/ fail（次数耗尽全部失败）
+# 文件格式: task_name|YYYY-MM-DD|reconnects|failures
+# 跨天自动重置
+# =============================================================
+COUNTER_DIR=$(dirname "$COUNTER_FILE")
+[ -d "$COUNTER_DIR" ] || mkdir -p "$COUNTER_DIR"
+
+counter_increment() {
+    local task_name="$1"
+    local field="$2"   # "reconnect" or "fail"
+    local today=$(date '+%Y-%m-%d')
+    local tmp="${COUNTER_FILE}.tmp"
+
+    local found=0
+    {
+        if [ -f "$COUNTER_FILE" ]; then
+            while IFS='|' read -r name date rec fail rest; do
+                if [ "$name" = "$task_name" ]; then
+                    found=1
+                    if [ "$date" != "$today" ]; then
+                        # 跨天重置
+                        if [ "$field" = "reconnect" ]; then
+                            echo "${task_name}|${today}|1|0"
+                        else
+                            echo "${task_name}|${today}|0|1"
+                        fi
+                    else
+                        if [ "$field" = "reconnect" ]; then
+                            rec=$((rec + 1))
+                        else
+                            fail=$((fail + 1))
+                        fi
+                        echo "${task_name}|${today}|${rec}|${fail}"
+                    fi
+                else
+                    # 保留其他任务行（也检查日期）
+                    [ -n "$name" ] && echo "$name|$date|$rec|$fail"
+                fi
+            done < "$COUNTER_FILE"
+        fi
+        if [ "$found" = "0" ]; then
+            if [ "$field" = "reconnect" ]; then
+                echo "${task_name}|${today}|1|0"
+            else
+                echo "${task_name}|${today}|0|1"
+            fi
+        fi
+    } > "$tmp"
+    mv "$tmp" "$COUNTER_FILE"
 }
 
 # =============================================================
@@ -233,6 +286,7 @@ run_single_task() {
         else
             if [ $switched -eq 1 ]; then
                 log "切换后访问恢复！[${prev_node}] → [${CURRENT_NODE}]" "$TASK_NAME"
+                counter_increment "$TASK_NAME" "reconnect"
                 send_webhook_notification "${TASK_NAME} 已恢复" "节点 [${prev_node}] 失效，切换至 [${CURRENT_NODE}] 后访问正常"
             else
                 log "访问正常，无需切换" "$TASK_NAME"
@@ -242,6 +296,7 @@ run_single_task() {
     done
 
     log "已连续尝试 ${MAX_TRIES} 次，全部失败" "$TASK_NAME"
+    counter_increment "$TASK_NAME" "fail"
     send_webhook_notification "${TASK_NAME} 全部失败" "所有节点尝试 ${MAX_TRIES} 次均失败，请检查网络或节点状态"
     return 1
 }

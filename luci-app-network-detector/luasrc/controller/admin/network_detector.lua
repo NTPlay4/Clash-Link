@@ -42,6 +42,10 @@ function index()
     -- API: 下载完整日志文件
     entry({"admin", "services", "network_detector", "downloadlog"},
         call("action_downloadlog")).leaf = true
+
+    -- API: 获取当日计数器
+    entry({"admin", "services", "network_detector", "counters"},
+        call("action_counters")).leaf = true
 end
 
 function action_proxy_groups()
@@ -206,4 +210,39 @@ function action_downloadlog()
     http.header("Content-Disposition", "attachment; filename=\"" .. filename .. "\"")
     http.header("Content-Length", tostring(#content))
     http.write(content)
+end
+
+function action_counters()
+    local http = require("luci.http")
+    http.prepare_content("application/json")
+
+    local counter_file = "/var/lib/network-detector/counters"
+    local today = os.date("%Y-%m-%d")
+
+    local result = {}
+    local f = io.open(counter_file, "r")
+    if f then
+        for line in f:lines() do
+            if line:match("^%s*$") then
+                -- skip empty
+            else
+                local name, date, reconn, fail = line:match("^([^|]*)|([^|]*)|([^|]*)|([^|]*)$")
+                if name and date and reconn and fail then
+                    if date == today then
+                        result[name] = { reconnect = tonumber(reconn) or 0, fail = tonumber(fail) or 0 }
+                    end
+                end
+            end
+        end
+        f:close()
+    end
+
+    -- 转义 JSON
+    local parts = {}
+    for name, v in pairs(result) do
+        local escaped_name = name:gsub('\\', '\\\\'):gsub('"', '\\"')
+        parts[#parts + 1] = string.format('"%s":{"reconnect":%d,"fail":%d}',
+            escaped_name, v.reconnect, v.fail)
+    end
+    http.write("{" .. table.concat(parts, ",") .. "}")
 end

@@ -5,7 +5,7 @@ $ErrorActionPreference = "Stop"
 
 $OUTDIR = "$PSScriptRoot\output"
 $TMPDIR = "$PSScriptRoot\tmp_build"
-$VERSION = "1.2.0"
+$VERSION = "1.0.1"
 $RELEASE = "1"
 
 # 仅清理临时构建目录，保留 output 中的旧版本
@@ -242,9 +242,14 @@ ConvertTo-UnixLFRecursive -Dir "$merged\etc\uci-defaults"
 $postinst_path = "$TMPDIR\postinst.sh"
 Write-UnixFile -Path $postinst_path -Content @'
 #!/bin/sh
+# 安装/升级后启用并启动（或重启）服务
 [ -n "${IPKG_INSTROOT}" ] && exit 0
-/etc/init.d/network-detector enable 2>/dev/null
-/etc/init.d/network-detector start 2>/dev/null
+if [ "${1}" = "upgrade" ]; then
+    /etc/init.d/network-detector restart 2>/dev/null
+else
+    /etc/init.d/network-detector enable 2>/dev/null
+    /etc/init.d/network-detector start 2>/dev/null
+fi
 exit 0
 '@
 
@@ -254,14 +259,17 @@ exit 0
 $prerm_path = "$TMPDIR\prerm.sh"
 Write-UnixFile -Path $prerm_path -Content @'
 #!/bin/sh
+# 停止服务；仅卸载时清理文件
 [ -n "${IPKG_INSTROOT}" ] && exit 0
 /etc/init.d/network-detector stop 2>/dev/null
 /etc/init.d/network-detector disable 2>/dev/null
-if [ -f /etc/crontabs/root ]; then
-    sed -i '/network-detector/d' /etc/crontabs/root
-    /etc/init.d/cron restart 2>/dev/null
+if [ "${1}" != "upgrade" ]; then
+    if [ -f /etc/crontabs/root ]; then
+        sed -i '/network-detector/d' /etc/crontabs/root
+        /etc/init.d/cron restart 2>/dev/null
+    fi
+    rm -f /var/log/network-detector.log
 fi
-rm -f /var/log/network-detector.log
 exit 0
 '@
 

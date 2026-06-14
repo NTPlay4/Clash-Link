@@ -8,7 +8,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=network-detector
-PKG_VERSION:=1.0.0
+PKG_VERSION:=1.0.1
 PKG_RELEASE:=1
 
 PKG_LICENSE:=GPL-2.0
@@ -53,25 +53,36 @@ define Package/network-detector/install
     $(INSTALL_BIN) ./files/etc/init.d/network-detector $(1)/etc/init.d/
 endef
 
+define Package/network-detector/conffiles
+/etc/config/network-detector
+endef
+
 define Package/network-detector/postinst
 #!/bin/sh
-# 首次安装后启用并启动服务
+# 安装/升级后启用并启动（或重启）服务
 [ -n "$${IPKG_INSTROOT}" ] && exit 0
-/etc/init.d/network-detector enable
-/etc/init.d/network-detector start 2>/dev/null
+if [ "$${1}" = "upgrade" ]; then
+    /etc/init.d/network-detector restart 2>/dev/null
+else
+    /etc/init.d/network-detector enable
+    /etc/init.d/network-detector start 2>/dev/null
+fi
 exit 0
 endef
 
 define Package/network-detector/prerm
 #!/bin/sh
-# 卸载前停止服务并清理
+# 停止服务；仅卸载时清理文件
 [ -n "$${IPKG_INSTROOT}" ] && exit 0
 /etc/init.d/network-detector stop 2>/dev/null
 /etc/init.d/network-detector disable
-if [ -f /etc/crontabs/root ]; then
-    sed -i '/network-detector/d' /etc/crontabs/root && /etc/init.d/cron restart 2>/dev/null
+if [ "$${1}" != "upgrade" ]; then
+    if [ -f /etc/crontabs/root ]; then
+        sed -i '/network-detector/d' /etc/crontabs/root && /etc/init.d/cron restart 2>/dev/null
+    fi
+    rm -f /var/log/network-detector.log
+    rm -f /var/lib/network-detector/counters
 fi
-rm -f /var/log/network-detector.log
 exit 0
 endef
 
