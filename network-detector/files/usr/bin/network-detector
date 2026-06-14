@@ -24,14 +24,23 @@ load_global_config() {
 
     # 自动检测 OpenClash Secret (运行时补救)
     if [ -z "$CLASH_SECRET" ]; then
-        # 尝试从 OpenClash UCI 读取
+        # 1) 尝试从 OpenClash UCI 读取
         CLASH_SECRET=$(uci -q get openclash.@config[0].dashboard_password 2>/dev/null)
-        # 尝试从 OpenClash YAML 配置读取
+
+        # 2) uci show 兜底（某些版本 key 名不同）
         if [ -z "$CLASH_SECRET" ]; then
-            for conf in /etc/openclash/config/*.yaml /etc/openclash/*.yaml; do
-                [ -f "$conf" ] || continue
-                CLASH_SECRET=$(grep -m1 '^secret:' "$conf" 2>/dev/null | sed "s/^secret:[[:space:]]*['\"]\?//;s/['\"]$//")
-                [ -n "$CLASH_SECRET" ] && break
+            CLASH_SECRET=$(uci -q show openclash 2>/dev/null | grep -iE '(password|secret|token)' | head -1 | sed "s/^[^=]*='*//;s/'$//")
+        fi
+
+        # 3) YAML 配置（去掉 ^ 锚点，兼容缩进；同时搜 .yaml .yml；多目录）
+        if [ -z "$CLASH_SECRET" ]; then
+            for dir in /etc/openclash/config /etc/openclash/custom /etc/openclash; do
+                [ -d "$dir" ] || continue
+                for conf in "$dir"/*.yaml "$dir"/*.yml; do
+                    [ -f "$conf" ] || continue
+                    CLASH_SECRET=$(grep -hm1 'secret:' "$conf" 2>/dev/null | sed "s/.*secret:[[:space:]]*['\"]\?//;s/['\"].*$//;s/[[:space:]]*$//" | head -1)
+                    [ -n "$CLASH_SECRET" ] && break 2
+                done
             done
         fi
     fi

@@ -159,27 +159,71 @@ end
 
 function action_detectsecret()
     local http = require("luci.http")
+    local nixio = require("nixio")
     http.prepare_content("application/json")
 
-    -- 1) 尝试从 OpenClash UCI 读取
-    local secret = luci.sys.exec("uci -q get openclash.@config[0].dashboard_password 2>/dev/null"):match("^(%S+)")
-    if secret and secret ~= "" then
-        http.write(string.format('{"secret":"%s"}', secret:gsub('"', '\\"')))
-        return
+    local function extract_yaml_secret(line)
+        -- 去掉 "secret:" 前缀及前后空白/引号
+        local val = line:match("secret:%s*(.+)")
+        if val then
+            val = val:match("^%s*[\"']?(.-)[\"']?%s*$")
+        end
+        return val
     end
 
-    -- 2) 尝试从 OpenClash YAML 配置读取
-    local confs = luci.sys.exec("ls /etc/openclash/config/*.yaml /etc/openclash/*.yaml 2>/dev/null")
-    for conf in confs:gmatch("[^\r\n]+") do
-        local s = luci.sys.exec("grep -m1 '^secret:' " .. conf .. " 2>/dev/null | sed \"s/^secret:[[:space:]]*['\\\"]\\?//;s/['\\\"]$//\"")
-        s = s:match("^(%S+)")
-        if s and s ~= "" then
-            http.write(string.format('{"secret":"%s"}', s:gsub('"', '\\"')))
-            return
+    local secret = ""
+
+    -- 1) OpenClash UCI dashboard_password
+    local s = luci.sys.exec("uci -q get openclash.@config[0].dashboard_password 2>/dev/null")
+    s = s:match("^(%S+)")
+    if s and s ~= "" then secret = s end
+
+    -- 2) uci show 兜底（某些 OpenClash 版本用其他 key）
+    if secret == "" then
+        local raw = luci.sys.exec("uci -q show openclash 2>/dev/null | grep -iE '(password|secret|token)' 2>/dev/null | head -1")
+        local val = raw:match("=([^\n]+)$")
+        if val and val ~= "" then
+            val = val:match("^'*(.-)'*$") -- 去掉 UCI 的单引号包裹
+            if val ~= "" then secret = val end
         end
     end
 
-    http.write('{"secret":""}')
+    -- 3) YAML 配置（去掉行首锚点，兼容缩进；同时搜 .yaml / .yml）
+    if secret == "" then
+        local yaml_dirs = {
+            "/etc/openclash/config",
+            "/etc/openclash/custom",
+            "/etc/openclash"
+        }
+        for _, dir in ipairs(yaml_dirs) do
+            local h = io.popen("ls " .. dir .. "/*.yaml " .. dir .. "/*.yml 2>/dev/null")
+            if h then
+                for fname in h:lines() do
+                    fname = fname:match("^%s*(.-)%s*$")
+                    if fname ~= "" and nixio.fs.access(fname) then
+                        local f = io.open(fname, "r")
+                        if f then
+                            for line in f:lines() do
+                                if line:find("secret:") then
+                                    local val = extract_yaml_secret(line)
+                                    if val and val ~= "" then
+                                        secret = val
+                                        break
+                                    end
+                                end
+                            end
+                            f:close()
+                        end
+                    end
+                    if secret ~= "" then break end
+                end
+                h:close()
+            end
+            if secret ~= "" then break end
+        end
+    end
+
+    http.write(string.format('{"secret":"%s"}', (secret:gsub('\\', '\\\\'):gsub('"', '\\"'))))
 end
 
 function action_downloadlog()
