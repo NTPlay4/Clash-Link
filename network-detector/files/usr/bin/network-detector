@@ -1,0 +1,291 @@
+#!/bin/sh
+#
+# OpenWrt 网络检测脚本 - 支持多任务、Clash代理切换、Webhooks通知
+# 读取 UCI 配置: /etc/config/network-detector
+#
+
+LOG_FILE="/var/log/network-detector.log"
+
+# =============================================================
+# 从 UCI 读取全局配置
+# =============================================================
+load_global_config() {
+    CLASH_API="$(uci -q get network-detector.@clash[0].api_url 2>/dev/null)"
+    CLASH_SECRET="$(uci -q get network-detector.@clash[0].secret 2>/dev/null)"
+    LOCAL_PROXY="$(uci -q get network-detector.@clash[0].local_proxy 2>/dev/null)"
+    PROXY_TYPE="$(uci -q get network-detector.@clash[0].proxy_type 2>/dev/null)"
+    LOG_RETENTION="$(uci -q get network-detector.@main[0].log_retention_days 2>/dev/null)"
+
+    : ${CLASH_API:="http://127.0.0.1:9090"}
+    : ${LOCAL_PROXY:="127.0.0.1:7890"}
+    : ${PROXY_TYPE:="http"}
+    : ${LOG_RETENTION:="3"}
+
+    # 自动检测 OpenClash Secret (运行时补救)
+    if [ -z "$CLASH_SECRET" ]; then
+        # 尝试从 OpenClash UCI 读取
+        CLASH_SECRET=$(uci -q get openclash.@config[0].dashboard_password 2>/dev/null)
+        # 尝试从 OpenClash YAML 配置读取
+        if [ -z "$CLASH_SECRET" ]; then
+            for conf in /etc/openclash/config/*.yaml /etc/openclash/*.yaml; do
+                [ -f "$conf" ] || continue
+                CLASH_SECRET=$(grep -m1 '^secret:' "$conf" 2>/dev/null | sed "s/^secret:[[:space:]]*['\"]\?//;s/['\"]$//")
+                [ -n "$CLASH_SECRET" ] && break
+            done
+        fi
+    fi
+
+    # 构造 curl -x 用的代理地址
+    case "$PROXY_TYPE" in
+        socks5) CURL_PROXY="socks5://${LOCAL_PROXY}" ;;
+        http|*)  CURL_PROXY="${LOCAL_PROXY}" ;;
+    esac
+
+    # Webhook 配置
+    WEBHOOK_ENABLED="$(uci -q get network-detector.@webhook[0].enabled 2>/dev/null)"
+    WEBHOOK_URL="$(uci -q get network-detector.@webhook[0].url 2>/dev/null)"
+}
+
+# =============================================================
+# 检测 banned_keyword: 为空时完全跳过关键词检查
+# 若意外传入纯数字（如旧版 Tab 合并残留的 max_tries）也视为无关键词
+# =============================================================
+is_nonempty_keyword() {
+    local kw="$1"
+    [ -z "$kw" ] && return 1
+    # 纯数字不视为关键词
+    case "$kw" in
+        ''|*[!0-9]*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# 转义字符串中 jsonfilter 表达式里的特殊字符 (双引号 / 反斜杠)
+json_escape() {
+    echo "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
+
+# =============================================================
+# Webhook 通知函数（通用，支持 Bark/企微/钉钉等 GET 类 Webhook）
+# =============================================================
+send_webhook_notification() {
+    local title="$1"
+    local body="$2"
+    if [ "$WEBHOOK_ENABLED" != "1" ]; then
+        return 0
+    fi
+    if [ -z "$WEBHOOK_URL" ]; then
+        return 0
+    fi
+    # URL 编码 title 和 body（只编码空格，curl --data-urlencode 在 busybox 不可用）
+    local enc_title=$(echo -n "$title" | sed 's/ /%20/g; s/!/%21/g; s/#/%23/g; s/\$/%24/g; s/&/%26/g; s/'\''/%27/g; s/(/%28/g; s/)/%29/g; s/\*/%2A/g; s/+/%2B/g; s/,/%2C/g; s/\//%2F/g; s/:/%3A/g; s/;/%3B/g; s/=/%3D/g; s/?!/%3F/g; s/@/%40/g; s/\[/%5B/g; s/\]/%5D/g')
+    local enc_body=$(echo -n "$body" | sed 's/ /%20/g; s/!/%21/g; s/#/%23/g; s/\$/%24/g; s/&/%26/g; s/'\''/%27/g; s/(/%28/g; s/)/%29/g; s/\*/%2A/g; s/+/%2B/g; s/,/%2C/g; s/\//%2F/g; s/:/%3A/g; s/;/%3B/g; s/=/%3D/g; s/?!/%3F/g; s/@/%40/g; s/\[/%5B/g; s/\]/%5D/g')
+    curl -s --max-time 5 -X GET "${WEBHOOK_URL}/${enc_title}/${enc_body}" > /dev/null 2>&1
+}
+
+# =============================================================
+# 日志清理：仅保留最近 N 天的日志
+# =============================================================
+cleanup_old_logs() {
+    if [ -f "$LOG_FILE" ]; then
+        local retention_seconds=$((LOG_RETENTION * 86400))
+        local cutoff_ts=$(( $(date +%s) - retention_seconds ))
+        local cutoff_date=$(date -d "@$cutoff_ts" "+%Y-%m-%d" 2>/dev/null)
+        if [ -n "$cutoff_date" ]; then
+            awk -v limit="$cutoff_date" '$1 >= limit && NF > 0' "$LOG_FILE" > "${LOG_FILE}.tmp" 2>/dev/null
+            mv "${LOG_FILE}.tmp" "$LOG_FILE"
+        fi
+    fi
+}
+
+# =============================================================
+# 日志函数
+# =============================================================
+log() {
+    local msg="$1"
+    local task_name="$2"
+    local prefix=""
+    [ -n "$task_name" ] && prefix="[$task_name] "
+    echo "$(date '+%Y-%m-%d %H:%M:%S') ${prefix}${msg}" | tee -a "$LOG_FILE"
+}
+
+# =============================================================
+# 执行单个检测任务
+# =============================================================
+run_single_task() {
+    local TASK_NAME="$1"
+    local PROXY_GROUP="$2"
+    local TEST_URL="$3"
+    local BANNED_KEYWORD="$4"
+    local MAX_TRIES="$5"
+
+    # 参数校验
+    [ -z "$TASK_NAME" ] && TASK_NAME="未命名任务"
+    [ -z "$MAX_TRIES" ] && MAX_TRIES="5"
+    case "$MAX_TRIES" in ''|*[!0-9]*) MAX_TRIES="5" ;; esac
+    [ "$MAX_TRIES" -lt 1 ] && MAX_TRIES="1"
+    [ "$MAX_TRIES" -gt 20 ] && MAX_TRIES="20"
+
+    log "开始检测 [${TEST_URL}] ..." "$TASK_NAME"
+
+    local ENCODED_GROUP=$(echo "$PROXY_GROUP" | sed 's/ /%20/g')
+
+    # 1. 获取所有代理数据（检测 HTTP 状态码以判断认证失败）
+    local API_RESULT=$(curl -s -w "\nHTTP_STATUS:%{http_code}" --max-time 5 \
+        -H "Authorization: Bearer ${CLASH_SECRET}" \
+        "${CLASH_API}/proxies")
+    local HTTP_CODE=$(echo "$API_RESULT" | grep -oP 'HTTP_STATUS:\K\d+')
+    local ALL_PROXIES=$(echo "$API_RESULT" | sed '/^HTTP_STATUS:/d')
+
+    if [ -z "$ALL_PROXIES" ]; then
+        log "错误: 无法连接到 Clash API (${CLASH_API})" "$TASK_NAME"
+        return 1
+    fi
+
+    if [ "$HTTP_CODE" = "401" ] || [ "$HTTP_CODE" = "403" ]; then
+        log "错误: Clash API 认证失败 (HTTP ${HTTP_CODE})，请检查网页配置中的 API 密钥是否正确" "$TASK_NAME"
+        return 1
+    fi
+
+    # 使用 jsonfilter 解析 JSON (转义策略组名中的特殊字符)
+    local ESCAPED_GROUP=$(json_escape "$PROXY_GROUP")
+    local CURRENT_NODE=$(echo "$ALL_PROXIES" | jsonfilter -e "@.proxies[\"${ESCAPED_GROUP}\"].now" 2>/dev/null)
+    local NODES_JSON=$(echo "$ALL_PROXIES" | jsonfilter -e "@.proxies[\"${ESCAPED_GROUP}\"].all" 2>/dev/null)
+
+    if [ -z "$CURRENT_NODE" ] || [ -z "$NODES_JSON" ]; then
+        log "错误: 找不到策略组 [${PROXY_GROUP}]" "$TASK_NAME"
+        return 1
+    fi
+
+    # 将所有节点提取为列表
+    local NODES=$(echo "$NODES_JSON" | grep -o '"[^"]*"' | sed 's/"//g')
+
+    # 输出当前选中节点
+    log "策略组 [${PROXY_GROUP}] 当前节点: ${CURRENT_NODE}" "$TASK_NAME"
+
+    local try_count=0
+    local switched=0
+    local prev_node=""
+
+    while [ $try_count -lt $MAX_TRIES ]; do
+        log "尝试访问 (第 $((try_count + 1))/${MAX_TRIES} 次)..." "$TASK_NAME"
+
+        # 动态时间戳防止缓存
+        local RANDOM_URL="${TEST_URL}?_nocache=$(date +%s%N)"
+
+        local HTML_CONTENT=$(curl -s -x "$CURL_PROXY" -L --connect-timeout 8 \
+            -H "Cache-Control: no-cache" \
+            -H "Pragma: no-cache" \
+            "$RANDOM_URL")
+        local CURL_STATUS=$?
+
+        # 判定是否失败
+        local FAILED=0
+        if [ $CURL_STATUS -ne 0 ] || [ -z "$HTML_CONTENT" ]; then
+            log "访问失败 (curl 退出码: ${CURL_STATUS})" "$TASK_NAME"
+            FAILED=1
+        elif is_nonempty_keyword "$BANNED_KEYWORD" && echo "$HTML_CONTENT" | grep -qF "$BANNED_KEYWORD"; then
+            log "IP 已被封禁 (匹配关键词: ${BANNED_KEYWORD})" "$TASK_NAME"
+            FAILED=1
+        fi
+
+        if [ $FAILED -eq 1 ]; then
+            # 重新获取当前节点（检测认证）
+            local API_RESULT_TEMP=$(curl -s -w "\nHTTP_STATUS:%{http_code}" --max-time 5 \
+                -H "Authorization: Bearer ${CLASH_SECRET}" \
+                "${CLASH_API}/proxies")
+            local HTTP_CODE_TEMP=$(echo "$API_RESULT_TEMP" | grep -oP 'HTTP_STATUS:\K\d+')
+            local ALL_PROXIES_TEMP=$(echo "$API_RESULT_TEMP" | sed '/^HTTP_STATUS:/d')
+
+            if [ "$HTTP_CODE_TEMP" = "401" ] || [ "$HTTP_CODE_TEMP" = "403" ]; then
+                log "错误: Clash API 认证失败 (HTTP ${HTTP_CODE_TEMP})，中止切换" "$TASK_NAME"
+                [ $switched -eq 1 ] && send_webhook_notification "${TASK_NAME} 切换异常" "认证失败，已尝试切换节点但 API 无法连接"
+                return 1
+            fi
+
+            prev_node="$CURRENT_NODE"
+            CURRENT_NODE=$(echo "$ALL_PROXIES_TEMP" | jsonfilter -e "@.proxies[\"${ESCAPED_GROUP}\"].now" 2>/dev/null)
+
+            log "当前节点 [${CURRENT_NODE}] 判定失效" "$TASK_NAME"
+
+            # 选择下一个节点
+            local TARGET_NODE=$(echo "$NODES" | awk -v cur="$CURRENT_NODE" '
+                found { print $0; exit }
+                $0 == cur { found = 1 }
+            ')
+            if [ -z "$TARGET_NODE" ]; then
+                TARGET_NODE=$(echo "$NODES" | head -n 1)
+                log "已到末尾，从头开始" "$TASK_NAME"
+            fi
+
+            log "切换到节点: ${TARGET_NODE}" "$TASK_NAME"
+
+            curl -s --max-time 5 -X PUT \
+                -H "Authorization: Bearer ${CLASH_SECRET}" \
+                -H "Content-Type: application/json" \
+                -d "{\"name\":\"${TARGET_NODE}\"}" \
+                "${CLASH_API}/proxies/${ENCODED_GROUP}"
+
+            # 记录已切换（不在此处通知，等下次成功访问后再通知）
+            switched=1
+            try_count=$((try_count + 1))
+            sleep 3
+        else
+            if [ $switched -eq 1 ]; then
+                log "切换后访问恢复！[${prev_node}] → [${CURRENT_NODE}]" "$TASK_NAME"
+                send_webhook_notification "${TASK_NAME} 已恢复" "节点 [${prev_node}] 失效，切换至 [${CURRENT_NODE}] 后访问正常"
+            else
+                log "访问正常，无需切换" "$TASK_NAME"
+            fi
+            return 0
+        fi
+    done
+
+    log "已连续尝试 ${MAX_TRIES} 次，全部失败" "$TASK_NAME"
+    send_webhook_notification "${TASK_NAME} 全部失败" "所有节点尝试 ${MAX_TRIES} 次均失败，请检查网络或节点状态"
+    return 1
+}
+
+# =============================================================
+# 主入口
+# =============================================================
+main() {
+    load_global_config
+
+    # 检查 Clash API 是否配置
+    if [ -z "$CLASH_API" ]; then
+        logger -t "network-detector" "Clash API 未配置，退出"
+        exit 1
+    fi
+
+    cleanup_old_logs
+    log "========== 开始一轮检测 =========="
+
+    local task_idx=0
+    local task_count=0
+    local fail_count=0
+
+    while uci -q get "network-detector.@task[$task_idx]" > /dev/null 2>&1; do
+        local enabled=$(uci -q get "network-detector.@task[$task_idx].enabled" 2>/dev/null)
+        if [ "$enabled" = "1" ]; then
+            local TASK_NAME=$(uci -q get "network-detector.@task[$task_idx].name" 2>/dev/null)
+            local TASK_PROXY_GROUP=$(uci -q get "network-detector.@task[$task_idx].proxy_group" 2>/dev/null)
+            local TASK_TEST_URL=$(uci -q get "network-detector.@task[$task_idx].test_url" 2>/dev/null)
+            local TASK_BANNED_KEYWORD=$(uci -q get "network-detector.@task[$task_idx].banned_keyword" 2>/dev/null)
+            local TASK_MAX_TRIES=$(uci -q get "network-detector.@task[$task_idx].max_tries" 2>/dev/null)
+
+            [ -z "$TASK_MAX_TRIES" ] && TASK_MAX_TRIES="5"
+            case "$TASK_MAX_TRIES" in *[!0-9]*) TASK_MAX_TRIES="5" ;; esac
+            [ "$TASK_MAX_TRIES" -lt 1 ] && TASK_MAX_TRIES="1"
+            [ "$TASK_MAX_TRIES" -gt 20 ] && TASK_MAX_TRIES="20"
+
+            task_count=$((task_count + 1))
+            run_single_task "$TASK_NAME" "$TASK_PROXY_GROUP" "$TASK_TEST_URL" "$TASK_BANNED_KEYWORD" "$TASK_MAX_TRIES" || fail_count=$((fail_count + 1))
+        fi
+        task_idx=$((task_idx + 1))
+    done
+
+    log "========== 本轮检测结束 (任务:${task_count}, 失败:${fail_count}) =========="
+}
+
+main "$@"

@@ -1,0 +1,450 @@
+<%#
+LuCI View 模板 - 网络检测器状态页
+路径: /usr/lib/lua/luci/view/network_detector/status.htm
+-%>
+
+<%+header%>
+
+<%
+    local uci = require("luci.model.uci").cursor()
+    local fs  = require("nixio.fs")
+    local sys = require("luci.sys")
+%>
+
+<style type="text/css">
+/* ========== 状态页自定义样式 ========== */
+.nd-status-wrap { max-width:960px; margin:0 auto; }
+
+/* --- 服务状态横幅 --- */
+.nd-banner {
+    display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:12px;
+    padding:18px 22px; margin-bottom:18px; border-radius:8px;
+    background:linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+    color:#e0e0e0; box-shadow:0 2px 10px rgba(0,0,0,.25);
+}
+.nd-banner.nd-running { border-left:5px solid #27ae60; }
+.nd-banner.nd-stopped { border-left:5px solid #e74c3c; }
+.nd-banner-left { display:flex; align-items:center; gap:14px; }
+.nd-status-dot {
+    width:16px; height:16px; border-radius:50%; display:inline-block;
+    animation: nd-pulse 2s ease-in-out infinite;
+}
+.nd-status-dot.green { background:#27ae60; box-shadow:0 0 10px rgba(39,174,96,.6); }
+.nd-status-dot.red   { background:#e74c3c; box-shadow:0 0 10px rgba(231,76,60,.6); animation:none; }
+@keyframes nd-pulse {
+    0%,100% { opacity:1; transform:scale(1); }
+    50%     { opacity:.6; transform:scale(1.25); }
+}
+.nd-status-title { font-size:18px; font-weight:700; }
+.nd-status-sub { font-size:12px; opacity:.7; margin-top:2px; }
+.nd-banner-right { display:flex; gap:8px; align-items:center; }
+.nd-btn {
+    display:inline-block; padding:7px 16px; border-radius:5px; font-size:13px; font-weight:600;
+    text-decoration:none; cursor:pointer; border:none; transition:all .2s;
+}
+.nd-btn-run    { background:#e67e22; color:#fff; }
+.nd-btn-run:hover    { background:#d35400; }
+.nd-btn-run:disabled { opacity:.5; cursor:not-allowed; }
+.nd-btn-reload { background:#2980b9; color:#fff; }
+.nd-btn-reload:hover { background:#2471a3; }
+.nd-btn-config { background:#27ae60; color:#fff; }
+.nd-btn-config:hover { background:#219a52; }
+.nd-toast {
+    position:fixed; top:20px; left:50%; transform:translateX(-50%);
+    background:#2c3e50; color:#fff; padding:10px 24px; border-radius:6px;
+    font-size:13px; font-weight:600; z-index:9999; opacity:0; transition:opacity .3s;
+    pointer-events:none;
+}
+.nd-toast.show { opacity:1; }
+
+/* --- 信息卡片行 --- */
+.nd-cards { display:flex; gap:14px; margin-bottom:18px; flex-wrap:wrap; }
+.nd-card {
+    flex:1; min-width:150px; padding:15px 18px; border-radius:8px;
+    background:#fff; box-shadow:0 1px 4px rgba(0,0,0,.08);
+    border:1px solid #e8e8e8;
+}
+.nd-card .nd-card-icon { font-size:22px; margin-bottom:6px; }
+.nd-card .nd-card-label { font-size:11px; color:#888; text-transform:uppercase; letter-spacing:.5px; }
+.nd-card .nd-card-value { font-size:20px; font-weight:700; color:#2c3e50; margin-top:2px; }
+.nd-card .nd-card-unit  { font-size:12px; color:#999; font-weight:400; }
+
+/* --- 任务列表标题 --- */
+.nd-section-title {
+    font-size:16px; font-weight:700; color:#2c3e50; margin:0 0 12px 0;
+    padding-bottom:8px; border-bottom:2px solid #3498db;
+    display:flex; align-items:center; gap:8px;
+}
+.nd-section-title .nd-count-badge {
+    display:inline-block; background:#3498db; color:#fff; font-size:11px; font-weight:600;
+    padding:2px 9px; border-radius:10px;
+}
+
+/* --- 任务卡片 --- */
+.nd-task-list { display:flex; flex-direction:column; gap:10px; margin-bottom:18px; }
+.nd-task-card {
+    display:flex; align-items:center; flex-wrap:wrap; gap:14px;
+    padding:14px 18px; border-radius:8px; border:1px solid #e8e8e8;
+    background:#fff; box-shadow:0 1px 3px rgba(0,0,0,.04);
+    transition:box-shadow .2s;
+}
+.nd-task-card:hover { box-shadow:0 2px 8px rgba(0,0,0,.1); }
+.nd-task-card.disabled { opacity:.55; background:#f9f9f9; }
+.nd-task-icon {
+    width:40px; height:40px; border-radius:50%; display:flex; align-items:center; justify-content:center;
+    font-size:18px; flex-shrink:0;
+}
+.nd-task-icon.on  { background:#e8f8f0; color:#27ae60; }
+.nd-task-icon.off { background:#fde8e8; color:#e74c3c; }
+.nd-task-body { flex:1; min-width:180px; }
+.nd-task-name { font-weight:700; font-size:15px; color:#2c3e50; margin-bottom:3px; }
+.nd-task-meta { font-size:12px; color:#888; line-height:1.5; }
+.nd-task-meta span { margin-right:14px; white-space:nowrap; }
+.nd-task-meta .nd-label { color:#aaa; }
+.nd-task-url {
+    display:block; font-size:11px; color:#7f8c8d; word-break:break-all; margin-top:2px;
+    max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+}
+.nd-task-badge {
+    display:inline-block; padding:4px 14px; border-radius:12px; font-size:12px; font-weight:600;
+    white-space:nowrap; flex-shrink:0;
+}
+.nd-task-badge.on  { background:#d5f5e3; color:#1e8449; }
+.nd-task-badge.off { background:#fadbd8; color:#c0392b; }
+
+/* --- 日志区域 --- */
+.nd-log-wrap { margin-bottom:18px; }
+.nd-log-header {
+    display:flex; align-items:center; justify-content:space-between;
+    margin-bottom:8px;
+}
+.nd-log-title { font-size:16px; font-weight:700; color:#2c3e50; }
+.nd-log-bar {
+    display:flex; align-items:center; gap:10px;
+    padding:6px 12px; background:#1e1e1e; border-radius:6px 6px 0 0;
+}
+.nd-log-dots { display:flex; gap:5px; }
+.nd-log-dots span { width:10px; height:10px; border-radius:50%; display:inline-block; }
+.nd-log-dots .red   { background:#ff5f56; }
+.nd-log-dots .yellow{ background:#ffbd2e; }
+.nd-log-dots .green { background:#27c93f; }
+.nd-log-filename { color:#999; font-size:11px; font-family:monospace; }
+.nd-log-pre {
+    margin:0; padding:12px 16px; background:#121212; color:#b0b0b0;
+    max-height:420px; overflow:auto; font-size:12px; line-height:1.55;
+    font-family:'Cascadia Code','Fira Code','Consolas',monospace;
+    border-radius:0 0 6px 6px; white-space:pre-wrap; word-break:break-all;
+    border:1px solid #333; border-top:none;
+}
+.nd-log-pre .ts  { color:#569cd6; }  /* 时间戳 */
+.nd-log-pre .tag { color:#4ec9b0; }  /* [标签] */
+.nd-log-pre .err { color:#f44747; }  /* 错误 */
+.nd-log-pre .warn{ color:#dcdcaa; }  /* 警告 */
+.nd-log-pre .ok  { color:#6a9955; }  /* 成功 */
+
+/* --- 空状态 --- */
+.nd-empty {
+    text-align:center; padding:36px 20px; color:#aaa; font-size:14px;
+    border:2px dashed #e0e0e0; border-radius:8px; background:#fafafa;
+}
+.nd-empty-icon { font-size:36px; margin-bottom:8px; opacity:.4; }
+
+/* --- 响应式 --- */
+@media (max-width:700px) {
+    .nd-banner { flex-direction:column; align-items:flex-start; }
+    .nd-banner-right { width:100%; }
+    .nd-banner-right .nd-btn { flex:1; text-align:center; }
+    .nd-cards { flex-direction:column; }
+}
+</style>
+
+<!-- Toast 提示 -->
+<div id="nd-toast" class="nd-toast"></div>
+
+<div class="nd-status-wrap">
+
+<!-- ============================================================ -->
+<!-- 服务状态横幅 -->
+<!-- ============================================================ -->
+<%
+    local enabled = uci:get("network-detector", "@main[0]", "enabled") or "0"
+    local ival    = uci:get("network-detector", "@main[0]", "interval_value") or "60"
+    local iunit   = uci:get("network-detector", "@main[0]", "interval_unit") or "s"
+    local logdays = uci:get("network-detector", "@main[0]", "log_retention_days") or "3"
+
+    -- 兼容旧版 crontab_interval
+    if not ival or ival == "" then
+        local old = uci:get("network-detector", "@main[0]", "crontab_interval") or ""
+        if old ~= "" then ival = old; iunit = "cron" end
+    end
+
+    -- 人类可读间隔
+    local unit_labels = { s="秒", m="分钟", h="小时", cron="" }
+    local interval_text = ival .. " " .. (unit_labels[iunit] or "")
+    if iunit == "cron" then interval_text = ival end
+%>
+
+<div class="nd-banner <%= (enabled == '1') and 'nd-running' or 'nd-stopped' %>">
+    <div class="nd-banner-left">
+        <span class="nd-status-dot <%= (enabled == '1') and 'green' or 'red' %>"></span>
+        <div>
+            <div class="nd-status-title">
+                <% if enabled == "1" then %>服务运行中<% else %>服务已停止<% end %>
+            </div>
+            <div class="nd-status-sub">
+                <% if enabled == "1" then %>
+                    检测间隔 <%= interval_text %> &nbsp;|&nbsp; 日志保留 <%= logdays %> 天
+                <% else %>
+                    服务已禁用，请前往设置页面启用
+                <% end %>
+            </div>
+        </div>
+    </div>
+    <div class="nd-banner-right">
+        <button class="nd-btn nd-btn-reload" onclick="location.reload()" title="刷新页面">&#x21bb; 刷新</button>
+        <a class="nd-btn nd-btn-config" href="<%=luci.dispatcher.build_url('admin/services/network_detector/settings')%>">&#x2699; 设置</a>
+    </div>
+</div>
+
+<!-- ============================================================ -->
+<!-- 快速统计卡片 -->
+<!-- ============================================================ -->
+<%
+    local task_total = 0
+    local task_enabled = 0
+    uci:foreach("network-detector", "task", function(s)
+        task_total = task_total + 1
+        if s.enabled ~= "0" then task_enabled = task_enabled + 1 end
+    end)
+%>
+<div class="nd-cards">
+    <div class="nd-card">
+        <div class="nd-card-icon">&#x1f4e6;</div>
+        <div class="nd-card-label">任务总数</div>
+        <div class="nd-card-value"><%= task_total %></div>
+    </div>
+    <div class="nd-card">
+        <div class="nd-card-icon">&#x2705;</div>
+        <div class="nd-card-label">活跃任务</div>
+        <div class="nd-card-value" style="color:<%= (task_enabled > 0) and '#27ae60' or '#e74c3c' %>"><%= task_enabled %></div>
+    </div>
+    <div class="nd-card">
+        <div class="nd-card-icon">&#x23f0;</div>
+        <div class="nd-card-label">检测间隔</div>
+        <div class="nd-card-value"><%= ival %><span class="nd-card-unit"> <%= unit_labels[iunit] or "" %></span></div>
+    </div>
+    <div class="nd-card">
+        <div class="nd-card-icon">&#x1f4c4;</div>
+        <div class="nd-card-label">日志保留</div>
+        <div class="nd-card-value"><%= logdays %><span class="nd-card-unit"> 天</span></div>
+    </div>
+</div>
+
+<!-- ============================================================ -->
+<!-- 任务列表 -->
+<!-- ============================================================ -->
+<div class="nd-section-title">
+    &#x1f4cb; 检测任务列表
+    <span class="nd-count-badge"><%= task_enabled %>/<%= task_total %></span>
+</div>
+
+<div class="nd-task-list">
+    <%
+        if task_total == 0 then
+    %>
+    <div class="nd-empty">
+        <div class="nd-empty-icon">&#x1f50d;</div>
+        <div>暂无检测任务</div>
+        <div style="margin-top:6px;font-size:12px">请前往设置页面添加第一个检测任务</div>
+    </div>
+    <%
+        else
+            uci:foreach("network-detector", "task", function(s)
+                local is_on = (s.enabled ~= "0")
+                local icon  = is_on and "&#x2713;" or "&#x2717;"
+    %>
+    <div class="nd-task-card<%= is_on and '' or ' disabled' %>">
+        <div class="nd-task-icon <%= is_on and 'on' or 'off' %>"><%= icon %></div>
+        <div class="nd-task-body">
+            <div class="nd-task-name"><%= s.name or "未命名任务" %></div>
+            <div class="nd-task-meta">
+                <span><span class="nd-label">策略组:</span> <strong><%= s.proxy_group or "-" %></strong></span>
+                <% if s.max_tries and s.max_tries ~= "" then %>
+                <span><span class="nd-label">最大重试:</span> <%= s.max_tries %></span>
+                <% end %>
+                <% if s.banned_keyword and s.banned_keyword ~= "" then %>
+                <span><span class="nd-label">匹配关键词:</span> "<%= s.banned_keyword %>"</span>
+                <% end %>
+            </div>
+            <span class="nd-task-url" title="<%= s.test_url or '' %>">检测URL: <%= s.test_url or "-" %></span>
+        </div>
+        <span class="nd-task-badge <%= is_on and 'on' or 'off' %>">
+            <%= is_on and '启用' or '已禁用' %>
+        </span>
+    </div>
+    <%
+            end)
+        end
+    %>
+</div>
+
+<!-- ============================================================ -->
+<!-- 最近日志 -->
+<!-- ============================================================ -->
+<div class="nd-log-wrap">
+    <div class="nd-log-header">
+        <span class="nd-log-title">&#x1f4dc; 最近日志</span>
+        <span style="font-size:11px;color:#999">最近 50 行</span>
+    </div>
+    <div class="nd-log-bar">
+        <div class="nd-log-dots">
+            <span class="red"></span><span class="yellow"></span><span class="green"></span>
+        </div>
+        <span class="nd-log-filename">/var/log/network-detector.log</span>
+    </div>
+    <%
+        local logfile = "/var/log/network-detector.log"
+        local log_content = ""
+        local log_lines_cnt = 0
+        if fs.access(logfile) then
+            local f = io.open(logfile, "r")
+            if f then
+                local lines = {}
+                for line in f:lines() do
+                    lines[#lines + 1] = line
+                end
+                f:close()
+                local start = math.max(1, #lines - 49)
+                for i = start, #lines do
+                    local l = lines[i]
+                    l = l:gsub("^(%d%d%d%d%-%d%d%-%d%d %d%d:%d%d:%d%d)", "<span class=\"ts\">%1</span>")
+                    l = l:gsub("(%[.-%])", "<span class=\"tag\">%1</span>")
+                    if l:match("错误") or l:match("[Ee]rror") or l:match("失败") or l:match("FAIL") then
+                        l = "<span class=\"err\">" .. l .. "</span>"
+                    elseif l:match("正常") or l:match("恢复") or l:match("[Oo][Kk]") then
+                        l = "<span class=\"ok\">" .. l .. "</span>"
+                    end
+                    log_content = log_content .. l .. "\n"
+                    log_lines_cnt = log_lines_cnt + 1
+                end
+            end
+        end
+        if log_content == "" then
+            log_content = '<span style="color:#666">暂无日志数据，请先运行一次检测</span>'
+        end
+    %>
+    <pre id="log-pre" class="nd-log-pre"><%= log_content %></pre>
+</div>
+
+<!-- ============================================================ -->
+<!-- 底部操作 -->
+<!-- ============================================================ -->
+<div class="cbi-page-actions" style="margin-top:0">
+    <button id="btn-run" class="cbi-button cbi-button-reload" onclick="runDetection()">&#x25b6; 立即运行检测</button>
+</div>
+
+</div><!-- .nd-status-wrap -->
+
+<script type="text/javascript">
+var logPre = document.getElementById('log-pre');
+if(logPre) { logPre.scrollTop = logPre.scrollHeight; }
+
+// ====== Toast 提示 ======
+var toastTimer = null;
+function showToast(msg, duration) {
+    var el = document.getElementById('nd-toast');
+    if(!el) return;
+    el.textContent = msg;
+    el.classList.add('show');
+    if(toastTimer) clearTimeout(toastTimer);
+    toastTimer = setTimeout(function(){ el.classList.remove('show'); }, duration || 2500);
+}
+
+// ====== 立即运行检测 (AJAX, 不跳转不刷新, 冷却30秒) ======
+var _runCooldown = false;
+function runDetection() {
+    if(_runCooldown) return;
+    var btn = document.getElementById('btn-run');
+    if(!btn) return;
+    _runCooldown = true;
+    btn.disabled = true;
+    btn.innerHTML = '&#x23f3; 启动中...';
+
+    var apiUrl = window.location.href.replace(/\/(settings|status)(\?.*)?(#.*)?$/, '/run?_=' + Date.now());
+    var xhr = new XMLHttpRequest();
+    xhr.open('GET', apiUrl, true);
+    xhr.onload = function() {
+        // 冷却倒计时 (30秒)
+        btn.innerHTML = '&#x23f3; 30秒后可再次检测';
+        var cd = 30;
+        var timer = setInterval(function(){
+            cd--;
+            if(cd <= 0) {
+                btn.innerHTML = '&#x25b6; 立即运行检测';
+                btn.disabled = false;
+                _runCooldown = false;
+                clearInterval(timer);
+            } else {
+                btn.innerHTML = '&#x23f3; ' + cd + '秒后可再次检测';
+            }
+        }, 1000);
+        // 启动成功后立即拉一次日志
+        fetchLog();
+    };
+    xhr.onerror = function() {
+        showToast('❌ 网络请求失败，无法启动检测');
+        btn.disabled = false;
+        btn.innerHTML = '&#x25b6; 立即运行检测';
+        _runCooldown = false;
+    };
+    xhr.send();
+}
+
+// ====== 日志自动刷新 (每 5 秒 AJAX 拉取) ======
+var lastLogText = '';
+var logUrl = window.location.href.replace(/\/(settings|status)(\?.*)?(#.*)?$/, '/log?_=' + Date.now());
+
+function highlightLog(text) {
+    if(!text) return '<span style="color:#666">暂无日志</span>';
+    text = text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    var lines = text.split('\n');
+    for(var i = 0; i < lines.length; i++) {
+        var l = lines[i];
+        l = l.replace(/^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})/, '<span class="ts">$1</span>');
+        l = l.replace(/(\[[^\]]*\])/g, '<span class="tag">$1</span>');
+        if(/错误|[Ee]rror|失败|FAIL/.test(l))
+            l = '<span class="err">' + l + '</span>';
+        else if(/正常|恢复|[Oo][Kk]/.test(l))
+            l = '<span class="ok">' + l + '</span>';
+        lines[i] = l;
+    }
+    return lines.join('\n');
+}
+
+function fetchLog() {
+    var url = logUrl.replace(/_=\d+/, '_=' + Date.now());
+    var xhr = new XMLHttpRequest();
+    xhr.open('GET', url, true);
+    xhr.onload = function() {
+        if(xhr.status == 200) {
+            var text = xhr.responseText || '';
+            // 防止 LuCI 错误页面 HTML 被灌入日志区
+            if(/^\s*<!DOCTYPE|<html|<body/i.test(text)) {
+                console.warn('network-detector: /log 返回了 HTML 页面, 已忽略');
+                return;
+            }
+            if(text !== lastLogText && logPre) {
+                lastLogText = text;
+                var atBottom = (logPre.scrollTop + logPre.clientHeight + 30) >= logPre.scrollHeight;
+                logPre.innerHTML = highlightLog(text);
+                if(atBottom) logPre.scrollTop = logPre.scrollHeight;
+            }
+        }
+    };
+    xhr.send();
+}
+
+setInterval(fetchLog, 5000);
+</script>
+
+<%+footer%>

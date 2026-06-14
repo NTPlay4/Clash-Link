@@ -1,0 +1,30 @@
+# ========================================
+# 网络检测器 UCI 配置文件
+# 可在 LuCI → 服务 → 网络检测器 中编辑
+# ========================================
+
+config main 'main'
+    option enabled '1'
+    option interval_value '60'
+    option interval_unit 's'
+    option log_retention_days '3'
+
+config clash 'clash'
+    option api_url 'http://127.0.0.1:9090'
+    option secret ''
+    option proxy_type 'http'
+    option local_proxy '127.0.0.1:7890'
+
+config webhook 'webhook'
+    option enabled '0'
+    option url 'https://api.day.app/yourkey'
+
+# 在此添加检测任务，或通过 LuCI Web 界面配置
+# 示例（默认不启用，需手动取消注释并修改）：
+# config task
+#     option name '检测任务示例'
+#     option proxy_group 'Proxy'
+#     option test_url 'https://example.com/'
+#     option banned_keyword ''
+#     option max_tries '5'
+#     option enabled '1'
