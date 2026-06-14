@@ -1,4 +1,3 @@
-# Clash-Link
 # OpenWrt 网络检测器 (Network Detector)
 
 基于 Clash 代理的网络可达性自动检测与节点切换工具，支持 LuCI Web 界面配置。
@@ -52,80 +51,6 @@ d:/openwrt/
 │           └── uci-defaults/
 │               └── 99-luci-network-detector  # 首次安装初始化
 │
-└── build.ps1                      # Windows 本地构建脚本
-
-## 编译方法
-
-### 方式一：放入 OpenWrt 源码的 package 目录
-
-1. 将两个文件夹复制到 OpenWrt 源码的 `package/` 目录：
-
-```bash
-cp -r network-detector ~/openwrt/package/
-cp -r luci-app-network-detector ~/openwrt/package/
-```
-
-2. 在 menuconfig 中选中这两个包：
-
-```bash
-cd ~/openwrt
-make menuconfig
-```
-
-- `Network` → `network-detector` (勾选为 `*` 或 `M`)
-- `LuCI` → `Applications` → `luci-app-network-detector` (勾选为 `*` 或 `M`)
-
-3. 编译：
-
-```bash
-# 仅编译这两个包
-make package/network-detector/compile V=s
-make package/luci-app-network-detector/compile V=s
-
-# 或编译全部
-make -j$(nproc) V=s
-```
-
-4. 生成的 `.ipk` 文件在 `bin/packages/<架构>/` 目录下
-
-### 方式二：创建独立 feed
-
-1. 创建 feed 目录结构：
-
-```bash
-mkdir -p ~/openwrt-feeds/network-detector
-cp -r network-detector ~/openwrt-feeds/network-detector/
-cp -r luci-app-network-detector ~/openwrt-feeds/network-detector/
-```
-
-2. 在 OpenWrt 源码的 `feeds.conf.default` 中添加：
-
-```
-src-link network_detector ~/openwrt-feeds/network-detector
-```
-
-3. 更新并安装 feed：
-
-```bash
-cd ~/openwrt
-./scripts/feeds update network_detector
-./scripts/feeds install -a -p network_detector
-```
-
-4. 后续编译同上
-
-### 在已有 OpenWrt 路由器上安装
-
-```bash
-# 上传 ipk 文件到路由器
-scp network-detector_*.ipk root@192.168.1.1:/tmp/
-scp luci-app-network-detector_*.ipk root@192.168.1.1:/tmp/
-
-# 安装
-opkg install /tmp/network-detector_*.ipk
-opkg install /tmp/luci-app-network-detector_*.ipk
-```
-
 ## 使用方法
 
 ### Web 界面
