@@ -83,8 +83,9 @@ d:/openwrt/
 /etc/init.d/network-detector restart
 
 # 手动运行一次
+```
 /usr/bin/network-detector
-
+```
 ## 配置说明 (UCI)
 
 配置文件：`/etc/config/network-detector`
