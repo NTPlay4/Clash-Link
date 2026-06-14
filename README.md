@@ -1,4 +1,4 @@
-# OpenWrt 网络检测器 (Network Detector)
+# Clash-Link 网络检测器
 
 基于 Clash 代理的网络可达性自动检测与节点切换工具，支持 LuCI Web 界面配置。
 
