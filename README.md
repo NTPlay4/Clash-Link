@@ -76,24 +76,24 @@ d:/openwrt/
 - 检测任务列表：每个任务卡片显示启用状态、策略组、检测 URL、**当日切换/失败次数**（15 秒自动刷新）
 - 最近日志（终端风格，5 秒自动刷新，支持高亮着色）
 
-### 手动控制
+# 手动控制
 
-# 启动服务
+### 启动服务
 ```
 /etc/init.d/network-detector start
 ```
 
-# 停止服务
+### 停止服务
 ```
 /etc/init.d/network-detector stop
 ```
 
-# 重启服务
+### 重启服务
 ```
 /etc/init.d/network-detector restart
 ```
 
-# 手动运行一次
+### 手动运行一次
 ```
 /usr/bin/network-detector
 ```
