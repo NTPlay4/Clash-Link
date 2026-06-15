@@ -5,7 +5,7 @@ $ErrorActionPreference = "Stop"
 
 $OUTDIR = "$PSScriptRoot\output"
 $TMPDIR = "$PSScriptRoot\tmp_build"
-$VERSION = "1.0.4"
+$VERSION = "1.0.18"
 $RELEASE = "1"
 
 # 仅清理临时构建目录，保留 output 中的旧版本
@@ -253,6 +253,10 @@ Write-UnixFile -Path $postinst_path -Content @'
 #!/bin/sh
 # 安装/升级后启用并启动（或重启）服务
 [ -n "${IPKG_INSTROOT}" ] && exit 0
+
+# 清除 LuCI 模块缓存，确保前端页面加载最新版本
+rm -rf /tmp/luci-modulecache/ /tmp/luci-indexcache* 2>/dev/null
+
 if [ "${1}" = "upgrade" ]; then
     /etc/init.d/network-detector restart 2>/dev/null
 else
@@ -268,16 +272,32 @@ exit 0
 $prerm_path = "$TMPDIR\prerm.sh"
 Write-UnixFile -Path $prerm_path -Content @'
 #!/bin/sh
-# 停止服务；仅卸载时清理文件
 [ -n "${IPKG_INSTROOT}" ] && exit 0
+
+# 正常停止服务
 /etc/init.d/network-detector stop 2>/dev/null
 /etc/init.d/network-detector disable 2>/dev/null
-if [ "${1}" != "upgrade" ]; then
-    if [ -f /etc/crontabs/root ]; then
-        sed -i '/network-detector/d' /etc/crontabs/root
-        /etc/init.d/cron restart 2>/dev/null
-    fi
+
+if [ "${1}" = "upgrade" ]; then
+    rm -f /usr/bin/network-detector
+    rm -f /etc/init.d/network-detector
+    rm -f /etc/uci-defaults/99-luci-network-detector
+    rm -f /usr/lib/lua/luci/controller/admin/network_detector.lua
+    rm -f /usr/lib/lua/luci/model/cbi/network_detector.lua
+    rm -rf /usr/lib/lua/luci/view/network_detector/
+    rm -rf /usr/share/network-detector/
+    rm -rf /tmp/luci-modulecache/ /tmp/luci-indexcache* 2>/dev/null
+else
+    rm -f /etc/config/network-detector
+    rm -f /usr/bin/network-detector
+    rm -f /etc/init.d/network-detector
+    rm -f /etc/uci-defaults/99-luci-network-detector
+    rm -f /usr/lib/lua/luci/controller/admin/network_detector.lua
+    rm -f /usr/lib/lua/luci/model/cbi/network_detector.lua
+    rm -rf /usr/lib/lua/luci/view/network_detector/
+    rm -rf /usr/share/network-detector/
     rm -f /var/log/network-detector.log
+    rm -rf /tmp/luci-modulecache/ /tmp/luci-indexcache* 2>/dev/null
 fi
 exit 0
 '@
