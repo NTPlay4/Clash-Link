@@ -17,7 +17,7 @@ detect_openclash_secret() {
     # 1) 尝试从 /etc/config/openclash 的 UCI 读取
     secret=$(uci -q get openclash.@config[0].dashboard_password 2>/dev/null)
     if [ -n "$secret" ]; then
-        echo "network-detector: 从 OpenClash UCI 获取到密钥"
+        logger -t "network-detector" "从 OpenClash UCI 获取到密钥"
         printf '%s' "$secret"
         return 0
     fi
@@ -25,7 +25,7 @@ detect_openclash_secret() {
     # 2) uci show 兜底（某些版本 key 名不同）
     secret=$(uci -q show openclash 2>/dev/null | grep -iE '(password|secret|token)' | head -1 | sed "s/^[^=]*='*//;s/'$//")
     if [ -n "$secret" ]; then
-        echo "network-detector: 从 OpenClash UCI show 获取到密钥"
+        logger -t "network-detector" "从 OpenClash UCI show 获取到密钥"
         printf '%s' "$secret"
         return 0
     fi
@@ -37,7 +37,7 @@ detect_openclash_secret() {
             [ -f "$conf" ] || continue
             secret=$(grep -hm1 'secret:' "$conf" 2>/dev/null | sed "s/.*secret:[[:space:]]*['\"]\?//;s/['\"].*$//;s/[[:space:]]*$//" | head -1)
             if [ -n "$secret" ]; then
-                echo "network-detector: 从 OpenClash YAML ($conf) 获取到密钥"
+                logger -t "network-detector" "从 OpenClash YAML ($conf) 获取到密钥"
                 printf '%s' "$secret"
                 return 0
             fi
@@ -47,11 +47,15 @@ detect_openclash_secret() {
     return 1
 }
 
-# 尝试自动填入密钥
-OPENCLASH_SECRET=$(detect_openclash_secret)
-if [ -n "$OPENCLASH_SECRET" ]; then
-    uci -q set "network-detector.@clash[0].secret=$OPENCLASH_SECRET"
-    uci commit network-detector
+# 仅在用户未配置时自动填入密钥
+CURRENT_SECRET=$(uci -q get network-detector.@clash[0].secret 2>/dev/null)
+if [ -z "$CURRENT_SECRET" ]; then
+    OPENCLASH_SECRET=$(detect_openclash_secret)
+    if [ -n "$OPENCLASH_SECRET" ]; then
+        uci -q set "network-detector.@clash[0].secret=$OPENCLASH_SECRET"
+        uci commit network-detector
+        logger -t "network-detector" "首次安装，已自动填入 Clash API 密钥"
+    fi
 fi
 
 # =============================================================
@@ -72,9 +76,14 @@ detect_clash_api() {
     echo "http://127.0.0.1:9090"
 }
 
-CLASH_API=$(detect_clash_api)
-uci -q set "network-detector.@clash[0].api_url=$CLASH_API"
-uci commit network-detector
+# 仅在用户未配置时自动填入 API 地址
+CURRENT_API=$(uci -q get network-detector.@clash[0].api_url 2>/dev/null)
+if [ -z "$CURRENT_API" ]; then
+    CLASH_API=$(detect_clash_api)
+    uci -q set "network-detector.@clash[0].api_url=$CLASH_API"
+    uci commit network-detector
+    logger -t "network-detector" "首次安装，已自动填入 Clash API 地址: $CLASH_API"
+fi
 
 # =============================================================
 # 确保 cron 服务已启用
