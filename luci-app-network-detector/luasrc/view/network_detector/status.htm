@@ -191,20 +191,16 @@ LuCI View 模板 - 网络检测器状态页
 <!-- ============================================================ -->
 <%
     local enabled = uci:get("network-detector", "@main[0]", "enabled") or "0"
-    local ival    = uci:get("network-detector", "@main[0]", "interval_value") or "60"
-    local iunit   = uci:get("network-detector", "@main[0]", "interval_unit") or "s"
+    local ival    = uci:get("network-detector", "@main[0]", "interval_value") or "5"
     local logdays = uci:get("network-detector", "@main[0]", "log_retention_days") or "3"
 
     -- 兼容旧版 crontab_interval
     if not ival or ival == "" then
         local old = uci:get("network-detector", "@main[0]", "crontab_interval") or ""
-        if old ~= "" then ival = old; iunit = "cron" end
+        if old ~= "" then ival = old end
     end
 
-    -- 人类可读间隔
-    local unit_labels = { s="秒", m="分钟", h="小时", cron="" }
-    local interval_text = ival .. " " .. (unit_labels[iunit] or "")
-    if iunit == "cron" then interval_text = ival end
+    local interval_text = ival .. " 分钟"
 %>
 
 <div class="nd-banner <%= (enabled == '1') and 'nd-running' or 'nd-stopped' %>">
@@ -254,7 +250,7 @@ LuCI View 模板 - 网络检测器状态页
     <div class="nd-card">
         <div class="nd-card-icon">&#x23f0;</div>
         <div class="nd-card-label">检测间隔</div>
-        <div class="nd-card-value"><%= ival %><span class="nd-card-unit"> <%= unit_labels[iunit] or "" %></span></div>
+        <div class="nd-card-value"><%= ival %><span class="nd-card-unit"> 分钟</span></div>
     </div>
     <div class="nd-card">
         <div class="nd-card-icon">&#x1f4c4;</div>

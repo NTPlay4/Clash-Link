@@ -62,61 +62,30 @@ reload_service() {
 
 setup_cron() {
     local ival=$(uci -q get network-detector.@main[0].interval_value 2>/dev/null)
-    local iunit=$(uci -q get network-detector.@main[0].interval_unit 2>/dev/null)
 
     # 兼容旧版 crontab_interval 写法
     if [ -z "$ival" ]; then
         local old_cron=$(uci -q get network-detector.@main[0].crontab_interval 2>/dev/null)
         if [ -n "$old_cron" ]; then
-            # 尝试从 cron 表达式反推: */5 → 5m, 0 */2 → 2h, */1 → 1m
+            # 尝试从 cron 表达式反推: */5 → 5, */1 → 1
             case "$old_cron" in
-                */1\ *\ *\ *\ *) ival="1";  iunit="m" ;;
-                */5\ *\ *\ *\ *)  ival="5";  iunit="m" ;;
-                */10\ *\ *\ *\ *) ival="10"; iunit="m" ;;
-                */15\ *\ *\ *\ *) ival="15"; iunit="m" ;;
-                */30\ *\ *\ *\ *) ival="30"; iunit="m" ;;
-                0\ *\ *\ *)      ival="1";  iunit="h" ;;
-                0\ */2\ *\ *)    ival="2";  iunit="h" ;;
-                0\ */6\ *\ *)    ival="6";  iunit="h" ;;
-                0\ */12\ *\ *)   ival="12"; iunit="h" ;;
-                0\ 0\ *\ *)      ival="24"; iunit="h" ;;
-                *)               ival="5";  iunit="m" ;;
+                */1\ *\ *\ *\ *)  ival="1" ;;
+                */5\ *\ *\ *\ *)   ival="5" ;;
+                */10\ *\ *\ *\ *)  ival="10" ;;
+                */15\ *\ *\ *\ *)  ival="15" ;;
+                */30\ *\ *\ *\ *)  ival="30" ;;
+                *)                ival="5" ;;
             esac
         fi
     fi
 
-    : ${ival:="60"}
-    : ${iunit:="s"}
+    : ${ival:="5"}
 
     # 校验数值
-    case "$ival" in ''|*[!0-9]*) ival="60" ;; esac
+    case "$ival" in ''|*[!0-9]*) ival="5" ;; esac
     [ "$ival" -lt 1 ] && ival="1"
 
-    local cronexpr=""
-    local wrapper=""
-
-    case "$iunit" in
-        s)
-            if [ "$ival" -ge 60 ]; then
-                local min=$((ival / 60))
-                cronexpr="*/${min} * * * *"
-            else
-                # 亚分钟级：每分钟运行一次，内部 sleep 循环
-                cronexpr="* * * * *"
-                local times=$((60 / ival))
-                wrapper="for _ in \$(seq 1 ${times}); do ${PROG} > /dev/null 2>&1; [ \$_ -lt ${times} ] && sleep ${ival}; done"
-            fi
-            ;;
-        m)
-            cronexpr="*/${ival} * * * *"
-            ;;
-        h)
-            cronexpr="0 */${ival} * * *"
-            ;;
-        *)
-            cronexpr="*/5 * * * *"
-            ;;
-    esac
+    local cronexpr="*/${ival} * * * *"
 
     # 先移除旧条目
     if [ -f /etc/crontabs/root ]; then
@@ -124,15 +93,11 @@ setup_cron() {
     fi
 
     # 添加新条目
-    if [ -n "$wrapper" ]; then
-        echo "${cronexpr} ${wrapper} ${CRON_MARKER}" >> /etc/crontabs/root
-    else
-        echo "${cronexpr} ${PROG} > /dev/null 2>&1 ${CRON_MARKER}" >> /etc/crontabs/root
-    fi
+    echo "${cronexpr} ${PROG} > /dev/null 2>&1 ${CRON_MARKER}" >> /etc/crontabs/root
 
     # 重启 cron 服务
     /etc/init.d/cron enable 2>/dev/null
     /etc/init.d/cron restart 2>/dev/null
 
-    echo "network-detector crontab 已设置: ${cronexpr} (${ival}${iunit})"
+    echo "network-detector crontab 已设置: ${cronexpr} (每 ${ival} 分钟)"
 }

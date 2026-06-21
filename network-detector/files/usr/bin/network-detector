@@ -247,7 +247,7 @@ run_single_task() {
         log "尝试访问 (第 $((try_count + 1))/${MAX_TRIES} 次)..." "$TASK_NAME"
 
         # 动态时间戳防止缓存
-        local RANDOM_URL="${TEST_URL}?_nocache=$(date +%s%N)"
+        local RANDOM_URL="${TEST_URL}?_nocache=$(date +%s)"
 
         local HTML_CONTENT=$(curl -s -x "$CURL_PROXY" -L --connect-timeout 8 \
             -H "Cache-Control: no-cache" \

@@ -26,18 +26,10 @@ o.default = "1"
 o.rmempty = false
 
 o = s:option(Value, "interval_value", translate("检测间隔"))
-o.default = "60"
+o.default = "5"
 o.datatype = "uinteger"
 o.rmempty = false
-o.description = translate("自定义检测间隔时间，配合右侧单位使用。默认 60 秒（即每 1 分钟执行一次）")
-
-o = s:option(ListValue, "interval_unit", translate("间隔单位"))
-o:value("s", translate("秒"))
-o:value("m", translate("分"))
-o:value("h", translate("时"))
-o.default = "s"
-o.rmempty = false
-o.description = translate("检测间隔的时间单位。选「秒」则每隔 N 秒自动检测一次；选「分」或「时」则按 cron 定时任务在每分钟/每小时执行")
+o.description = translate("设置每隔多少分钟自动检测一次。默认 5 分钟，最小 1 分钟")
 
 o = s:option(Value, "log_retention_days", translate("日志保留天数"))
 o.default = "3"
