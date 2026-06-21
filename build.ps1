@@ -5,7 +5,7 @@ $ErrorActionPreference = "Stop"
 
 $OUTDIR = "$PSScriptRoot\output"
 $TMPDIR = "$PSScriptRoot\tmp_build"
-$VERSION = "1.0.33"
+$VERSION = "1.0.34"
 $RELEASE = "1"
 
 # 仅清理临时构建目录，保留 output 中的旧版本
