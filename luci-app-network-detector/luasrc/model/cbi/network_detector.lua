@@ -61,7 +61,7 @@ o = s:option(Value, "secret", translate("API 密钥 (Secret)"))
 o.password = true
 o.placeholder = "API Secret"
 o.rmempty = true
-o.description = translate("在 Clash 配置文件中 external-controller 下设置的 secret 值。留空将自动尝试从 OpenClash 配置中获取")
+o.description = translate("在 Clash 配置文件中 external-controller 下设置的 secret 值。可点击右侧「自动获取」按钮从 OpenClash 配置中自动填入")
 
 o = s:option(ListValue, "proxy_type", translate("代理类型"))
 o:value("http", "HTTP")
@@ -367,31 +367,66 @@ enh.value = [[<script type="text/javascript">
         }
     }, 800);
 
-    // ====== 2.5 自动检测 OpenClash Secret ======
-    setTimeout(function(){
-        // 查找 API 密钥输入框 (id=cbid.network-detector.clash.secret 或 name*="secret")
+    // ====== 2.5 自动获取 Secret 按钮 ======
+    var _secBtnDone=false;
+    function setupSecretBtn(){
+        if(_secBtnDone) return;
         var secInput=document.querySelector('input[id*="secret"][type="password"],input[name*="secret"][type="password"]');
         if(!secInput) return;
-        // 仅当字段为空时才自动检测
-        if(secInput.value && secInput.value.trim()!=='') return;
+        _secBtnDone=true;
 
-        var apiUrl=window.location.href.replace(/\/(settings|status)(\?.*)?(#.*)?$/, '/detectsecret?_=' + Date.now());
-        var xhr=new XMLHttpRequest();
-        xhr.open('GET', apiUrl, true);
-        xhr.onload=function(){
-            if(xhr.status==200){
+        // 创建「自动获取」按钮
+        var btn=document.createElement('button');
+        btn.type='button';
+        btn.className='cbi-button cbi-button-apply';
+        btn.textContent='\u81ea\u52a8\u83b7\u53d6';  // 自动获取
+        btn.style.cssText='margin-left:6px;padding:2px 10px;font-size:12px;vertical-align:middle;';
+
+        // 插入到输入框所在容器末尾（密码显示/隐藏图标之后）
+        var container = secInput.closest('td') || secInput.parentNode;
+        container.appendChild(btn);
+
+        // 点击逻辑
+        btn.addEventListener('click', function(e){
+            e.preventDefault();
+            if(btn.disabled) return;
+            btn.disabled=true;
+            btn.textContent='\u83b7\u53d6\u4e2d...';  // 获取中...
+
+            var apiUrl=window.location.href.replace(/\/(settings|status)(\?.*)?(#.*)?$/, '/detectsecret?_='+Date.now());
+            var xhr=new XMLHttpRequest();
+            xhr.open('GET', apiUrl, true);
+            xhr.onload=function(){
+                btn.disabled=false;
+                btn.textContent='\u81ea\u52a8\u83b7\u53d6';
                 try{
                     var r=JSON.parse(xhr.responseText);
                     if(r && r.secret && r.secret!==''){
                         secInput.value=r.secret;
                         secInput.style.borderColor='#27ae60';
-                        setTimeout(function(){ secInput.style.borderColor=''; }, 3000);
+                        setTimeout(function(){ secInput.style.borderColor=''; }, 2000);
+                    } else {
+                        alert('\u26a0 \u672a\u80fd\u83b7\u53d6\u5230 API \u5bc6\u94a5\uff0c\u8bf7\u68c0\u67e5 OpenClash \u914d\u7f6e\u6216\u624b\u52a8\u586b\u5199');
+                        // ⚠ 未能获取到 API 密钥，请检查 OpenClash 配置或手动填写
                     }
-                }catch(e){}
-            }
-        };
-        xhr.send();
-    }, 1000);
+                }catch(e){
+                    btn.disabled=false;
+                    btn.textContent='\u81ea\u52a8\u83b7\u53d6';
+                    alert('\u26a0 \u83b7\u53d6\u5931\u8d25\uff0c\u8bf7\u68c0\u67e5\u7f51\u7edc\u6216\u624b\u52a8\u586b\u5199');
+                    // ⚠ 获取失败，请检查网络或手动填写
+                }
+            };
+            xhr.onerror=function(){
+                btn.disabled=false;
+                btn.textContent='\u81ea\u52a8\u83b7\u53d6';
+                alert('\u26a0 \u8bf7\u6c42\u5931\u8d25\uff0c\u8bf7\u68c0\u67e5\u7f51\u7edc');
+                // ⚠ 请求失败，请检查网络
+            };
+            xhr.send();
+        });
+    }
+    setTimeout(setupSecretBtn, 200);
+    setTimeout(setupSecretBtn, 800);
 
     // ====== 3. 策略组下拉选择（隐藏手动输入框） ======
     var pgTimer=setInterval(function(){

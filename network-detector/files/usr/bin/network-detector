@@ -241,6 +241,7 @@ run_single_task() {
     local try_count=0
     local switched=0
     local prev_node=""
+    local first_fail_reason=""
 
     while [ $try_count -lt $MAX_TRIES ]; do
         log "尝试访问 (第 $((try_count + 1))/${MAX_TRIES} 次)..." "$TASK_NAME"
@@ -256,15 +257,20 @@ run_single_task() {
 
         # 判定是否失败
         local FAILED=0
+        local FAIL_REASON=""
         if [ $CURL_STATUS -ne 0 ] || [ -z "$HTML_CONTENT" ]; then
-            log "访问失败 (curl 退出码: ${CURL_STATUS})" "$TASK_NAME"
+            log "无法连接 (curl 退出码: ${CURL_STATUS})" "$TASK_NAME"
             FAILED=1
+            FAIL_REASON="无法连接"
         elif is_nonempty_keyword "$BANNED_KEYWORD" && echo "$HTML_CONTENT" | grep -qF "$BANNED_KEYWORD"; then
             log "IP 已被封禁 (匹配关键词: ${BANNED_KEYWORD})" "$TASK_NAME"
             FAILED=1
+            FAIL_REASON="被封"
         fi
 
         if [ $FAILED -eq 1 ]; then
+            # 记录本次失败类型（用于最终通知汇总）
+            [ -z "$first_fail_reason" ] && first_fail_reason="$FAIL_REASON"
             # 重新获取当前节点（检测认证）
             local API_RESULT_TEMP=$(curl -s -w "\nHTTP_STATUS:%{http_code}" --max-time 5 \
                 -H "Authorization: Bearer ${CLASH_SECRET}" \
@@ -281,7 +287,7 @@ run_single_task() {
             prev_node="$CURRENT_NODE"
             CURRENT_NODE=$(echo "$ALL_PROXIES_TEMP" | jsonfilter -e "@.proxies[\"${ESCAPED_GROUP}\"].now" 2>/dev/null)
 
-            log "当前节点 [${CURRENT_NODE}] 判定失效" "$TASK_NAME"
+            log "当前节点 [${CURRENT_NODE}] 判定失效 (${FAIL_REASON})" "$TASK_NAME"
 
             # 选择下一个节点
             local TARGET_NODE=$(echo "$NODES" | awk -v cur="$CURRENT_NODE" '
@@ -310,9 +316,12 @@ run_single_task() {
             sleep 3
         else
             if [ $switched -eq 1 ]; then
-                log "切换后访问恢复！[${prev_node}] → [${CURRENT_NODE}]" "$TASK_NAME"
+                local reason_text="${first_fail_reason:-失效}"
+                log "切换后访问恢复！[${prev_node}](${reason_text}) → [${CURRENT_NODE}]" "$TASK_NAME"
                 counter_increment "$TASK_NAME" "reconnect"
-                send_webhook_notification "recover" "${TASK_NAME} 已恢复" "节点 [${prev_node}] 失效，切换至 [${CURRENT_NODE}] 后访问正常"
+                send_webhook_notification "recover" \
+                    "${TASK_NAME} 已恢复" \
+                    "节点 [${prev_node}] ${reason_text}，切换至 [${CURRENT_NODE}] 后访问正常"
             else
                 log "访问正常，无需切换" "$TASK_NAME"
             fi
@@ -320,9 +329,10 @@ run_single_task() {
         fi
     done
 
-    log "已连续尝试 ${MAX_TRIES} 次，全部失败" "$TASK_NAME"
+    local reason_text="${first_fail_reason:-未知原因}"
+    log "已连续尝试 ${MAX_TRIES} 次，全部失败 (起因: ${reason_text})" "$TASK_NAME"
     counter_increment "$TASK_NAME" "fail"
-    send_webhook_notification "allfail" "${TASK_NAME} 全部失败" "所有节点尝试 ${MAX_TRIES} 次均失败，请检查网络或节点状态"
+    send_webhook_notification "allfail" "${TASK_NAME} 全部失败" "所有节点尝试 ${MAX_TRIES} 次均失败，起因: ${reason_text}，请检查网络或节点状态"
     return 1
 }
 
@@ -339,7 +349,7 @@ main() {
     fi
 
     cleanup_old_logs
-    log "========== 开始一轮检测 =========="
+    log "========== 开始检测 =========="
 
     local task_idx=0
     local task_count=0
