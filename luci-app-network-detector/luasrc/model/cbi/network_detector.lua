@@ -37,7 +37,7 @@ o:value("m", translate("分"))
 o:value("h", translate("时"))
 o.default = "s"
 o.rmempty = false
-o.description = translate("选择间隔数值的单位。秒级最小粒度 1 秒（<60 秒通过内部循环实现），分/时为标准 cron 调度")
+o.description = translate("检测间隔的时间单位。选「秒」则每隔 N 秒自动检测一次；选「分」或「时」则按 cron 定时任务在每分钟/每小时执行")
 
 o = s:option(Value, "log_retention_days", translate("日志保留天数"))
 o.default = "3"
