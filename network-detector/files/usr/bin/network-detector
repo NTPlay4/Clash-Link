@@ -342,7 +342,7 @@ run_single_task() {
 main() {
     # 杀掉所有其他 network-detector 实例，避免堆积
     local mypid=$$
-    local running_pids=$(pgrep -f 'network-detector' 2>/dev/null | grep -v "$mypid" || true)
+    local running_pids=$(pidof network-detector 2>/dev/null | tr ' ' '\n' | grep -v "$mypid" || true)
     if [ -n "$running_pids" ]; then
         logger -t "network-detector" "发现残留进程: $running_pids，强制终止后重新运行"
         kill -9 $running_pids 2>/dev/null
