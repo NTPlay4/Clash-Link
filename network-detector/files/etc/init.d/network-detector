@@ -39,8 +39,16 @@ start_service() {
         return 0
     fi
 
-    # 立即运行一次
-    [ -x "$PROG" ] && $PROG &
+    # 清理可能残留的 pidfile（仅当其中 PID 已非本程序时）
+    if [ -f /var/run/network-detector.pid ]; then
+        local oldpid=$(cat /var/run/network-detector.pid 2>/dev/null | tr -d ' \t')
+        if [ -n "$oldpid" ] && ! kill -0 "$oldpid" 2>/dev/null; then
+            rm -f /var/run/network-detector.pid 2>/dev/null
+        fi
+    fi
+
+    # 立即运行一次（脚本自身具备防重入，退出码可忽略）
+    [ -x "$PROG" ] && $PROG > /dev/null 2>&1 &
 
     # 配置 crontab
     setup_cron
@@ -52,6 +60,8 @@ stop_service() {
         sed -i "/${CRON_MARKER}/d" /etc/crontabs/root
         /etc/init.d/cron restart 2>/dev/null
     fi
+    # 清理 pidfile 锁（若有残留）
+    rm -f /var/run/network-detector.pid 2>/dev/null
     echo "network-detector 已停止"
 }
 

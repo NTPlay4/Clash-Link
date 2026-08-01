@@ -206,7 +206,7 @@ run_single_task() {
     local ENCODED_GROUP=$(echo "$PROXY_GROUP" | sed 's/ /%20/g')
 
     # 1. 获取所有代理数据（检测 HTTP 状态码以判断认证失败）
-    local API_RESULT=$(curl -s -w "\nHTTP_STATUS:%{http_code}" --max-time 5 \
+    local API_RESULT=$(curl -s -w "\nHTTP_STATUS:%{http_code}" --connect-timeout 5 --max-time 8 \
         -H "Authorization: Bearer ${CLASH_SECRET}" \
         "${CLASH_API}/proxies")
     local HTTP_CODE=$(echo "$API_RESULT" | grep -oP 'HTTP_STATUS:\K\d+')
@@ -249,7 +249,7 @@ run_single_task() {
         # 动态时间戳防止缓存
         local RANDOM_URL="${TEST_URL}?_nocache=$(date +%s)"
 
-        local HTML_CONTENT=$(curl -s -x "$CURL_PROXY" -L --connect-timeout 8 \
+        local HTML_CONTENT=$(curl -s -x "$CURL_PROXY" -L --connect-timeout 8 --max-time 15 \
             -H "Cache-Control: no-cache" \
             -H "Pragma: no-cache" \
             "$RANDOM_URL")
@@ -272,7 +272,7 @@ run_single_task() {
             # 记录本次失败类型（用于最终通知汇总）
             [ -z "$first_fail_reason" ] && first_fail_reason="$FAIL_REASON"
             # 重新获取当前节点（检测认证）
-            local API_RESULT_TEMP=$(curl -s -w "\nHTTP_STATUS:%{http_code}" --max-time 5 \
+            local API_RESULT_TEMP=$(curl -s -w "\nHTTP_STATUS:%{http_code}" --connect-timeout 5 --max-time 8 \
                 -H "Authorization: Bearer ${CLASH_SECRET}" \
                 "${CLASH_API}/proxies")
             local HTTP_CODE_TEMP=$(echo "$API_RESULT_TEMP" | grep -oP 'HTTP_STATUS:\K\d+')
@@ -313,7 +313,7 @@ run_single_task() {
             # 记录已切换（不在此处通知，等下次成功访问后再通知）
             switched=1
             try_count=$((try_count + 1))
-            sleep 3
+            sleep 1
         else
             if [ $switched -eq 1 ]; then
                 local reason_text="${first_fail_reason:-失效}"
@@ -339,14 +339,42 @@ run_single_task() {
 # =============================================================
 # 主入口
 # =============================================================
-main() {
-    # 杀掉所有其他 network-detector 实例，避免堆积
-    local mypid=$$
-    local running_pids=$(pidof network-detector 2>/dev/null | tr ' ' '\n' | grep -v "$mypid" || true)
-    if [ -n "$running_pids" ]; then
-        logger -t "network-detector" "发现残留进程: $running_pids，强制终止后重新运行"
-        kill -9 $running_pids 2>/dev/null
+# =============================================================
+# 防重入：pidfile 机制
+# 仅当锁文件中记录的 PID 仍然存活且确为本程序时，才视为“已有实例在跑”，
+# 此时当前进程静默退出（不打断、不强杀任何进程）。
+# 若锁文件不存在、PID 已死、或 PID 被复用为其他程序，则正常接管。
+# 任何退出路径（正常/报错/信号）都会通过 trap 清理锁文件，避免假死锁。
+# =============================================================
+PID_FILE="/var/run/network-detector.pid"
+
+is_our_process() {
+    local pid="$1"
+    [ -z "$pid" ] && return 1
+    # PID 必须存活
+    kill -0 "$pid" 2>/dev/null || return 1
+    # 校验 cmdline 确为本程序，防止 PID 复用误判
+    if [ -r "/proc/$pid/cmdline" ]; then
+        grep -q "network-detector" "/proc/$pid/cmdline" 2>/dev/null || return 1
     fi
+    return 0
+}
+
+main() {
+    # 防重入检查：已有实例在跑则直接退出，避免进程堆积与误杀
+    if [ -f "$PID_FILE" ]; then
+        local oldpid=$(cat "$PID_FILE" 2>/dev/null | tr -d ' \t')
+        if is_our_process "$oldpid"; then
+            logger -t "network-detector" "已有实例在运行 (PID: $oldpid)，本次跳过"
+            exit 0
+        fi
+        # 锁文件残留（进程已死或非本程序），清理后接管
+        rm -f "$PID_FILE" 2>/dev/null
+    fi
+
+    # 写入自身 PID 并注册退出清理（防止任何路径下的假死锁）
+    echo $$ > "$PID_FILE"
+    trap 'rm -f "$PID_FILE" 2>/dev/null' EXIT INT TERM
 
     load_global_config
 
