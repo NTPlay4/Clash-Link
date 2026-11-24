@@ -20,6 +20,8 @@ load_global_config() {
     CLASH_SECRET="$(uci -q get network-detector.@clash[0].secret 2>/dev/null)"
     LOCAL_PROXY="$(uci -q get network-detector.@clash[0].local_proxy 2>/dev/null)"
     PROXY_TYPE="$(uci -q get network-detector.@clash[0].proxy_type 2>/dev/null)"
+    PROXY_USER="$(uci -q get network-detector.@clash[0].proxy_user 2>/dev/null)"
+    PROXY_PASS="$(uci -q get network-detector.@clash[0].proxy_pass 2>/dev/null)"
     LOG_RETENTION="$(uci -q get network-detector.@main[0].log_retention_days 2>/dev/null)"
 
     : ${CLASH_API:="http://127.0.0.1:9090"}
@@ -52,10 +54,20 @@ load_global_config() {
         fi
     fi
 
-    # 构造 curl -x 用的代理地址
+    # 代理认证只读取本插件配置项，不从 OpenClash 自动获取
+    # 日志中不显示密码
+    if [ -n "$PROXY_USER" ]; then
+        PROXY_DISPLAY="${PROXY_USER}:***@${LOCAL_PROXY}"
+        auth="$(url_encode "$PROXY_USER"):$(url_encode "$PROXY_PASS")@"
+    else
+        PROXY_DISPLAY="${LOCAL_PROXY}"
+        auth=""
+    fi
+
+    # 检测流量始终使用配置里的代理地址/类型，脚本不会自动修改
     case "$PROXY_TYPE" in
-        socks5) CURL_PROXY="socks5://${LOCAL_PROXY}" ;;
-        http|*)  CURL_PROXY="${LOCAL_PROXY}" ;;
+        socks5) CURL_PROXY="socks5://${auth}${LOCAL_PROXY}" ;;
+        http|*)  CURL_PROXY="http://${auth}${LOCAL_PROXY}" ;;
     esac
 
     # Webhook 配置（两个独立开关）
@@ -149,6 +161,30 @@ api_call() {
 }
 
 # =============================================================
+# 每轮检测前检查 Clash 是否真的由 TUN 接管路由：
+# 只有 tun.enable=true 且 auto-route=true 才算 TUN 模式。
+# 端口完全以配置为准，不从 API 自动修改。
+# =============================================================
+resolve_local_proxy() {
+    TUN_ENABLED=0
+
+    if api_call GET "/configs"; then
+        local tun=$(grep -o '"tun":{[^}]*}' "$API_TMP" 2>/dev/null | head -1)
+        local enable=$(printf '%s' "$tun" | grep -o '"enable"[^,}]*' | grep -o 'true' | head -1)
+        local route=$(printf '%s' "$tun" | grep -o '"auto-route"[^,}]*' | grep -o 'true' | head -1)
+
+        if [ -n "$enable" ] && [ -n "$route" ]; then
+            TUN_ENABLED=1
+            log "检测到 Clash TUN 已接管路由，检测仍使用配置端口: ${PROXY_DISPLAY:-直连}"
+        else
+            log "Clash TUN 未接管路由 (enable=${enable:-false}, auto-route=${route:-false})，使用配置端口: ${PROXY_DISPLAY:-直连}"
+        fi
+    else
+        log "读取 Clash API /configs 失败 (HTTP ${API_CODE})，TUN 状态未知，使用配置端口: ${PROXY_DISPLAY:-直连}"
+    fi
+}
+
+# =============================================================
 # Webhook 通知函数（通用，支持 Bark/企微/钉钉等 GET 类 Webhook）
 # =============================================================
 send_webhook_notification() {
@@ -173,8 +209,8 @@ send_webhook_notification() {
         return 0
     fi
     # URL 编码 title 和 body（只编码空格，curl --data-urlencode 在 busybox 不可用）
-    local enc_title=$(echo -n "$title" | sed 's/ /%20/g; s/!/%21/g; s/#/%23/g; s/\$/%24/g; s/&/%26/g; s/'\''/%27/g; s/(/%28/g; s/)/%29/g; s/\*/%2A/g; s/+/%2B/g; s/,/%2C/g; s/\//%2F/g; s/:/%3A/g; s/;/%3B/g; s/=/%3D/g; s/?!/%3F/g; s/@/%40/g; s/\[/%5B/g; s/\]/%5D/g')
-    local enc_body=$(echo -n "$body" | sed 's/ /%20/g; s/!/%21/g; s/#/%23/g; s/\$/%24/g; s/&/%26/g; s/'\''/%27/g; s/(/%28/g; s/)/%29/g; s/\*/%2A/g; s/+/%2B/g; s/,/%2C/g; s/\//%2F/g; s/:/%3A/g; s/;/%3B/g; s/=/%3D/g; s/?!/%3F/g; s/@/%40/g; s/\[/%5B/g; s/\]/%5D/g')
+    local enc_title=$(echo -n "$title" | sed 's/ /%20/g; s/!/%21/g; s/#/%23/g; s/\$/%24/g; s/&/%26/g; s/'\''/%27/g; s/(/%28/g; s/)/%29/g; s/\*/%2A/g; s/+/%2B/g; s/,/%2C/g; s/\//%2F/g; s/:/%3A/g; s/;/%3B/g; s/=/%3D/g; s/?/%3F/g; s/@/%40/g; s/\[/%5B/g; s/\]/%5D/g')
+    local enc_body=$(echo -n "$body" | sed 's/ /%20/g; s/!/%21/g; s/#/%23/g; s/\$/%24/g; s/&/%26/g; s/'\''/%27/g; s/(/%28/g; s/)/%29/g; s/\*/%2A/g; s/+/%2B/g; s/,/%2C/g; s/\//%2F/g; s/:/%3A/g; s/;/%3B/g; s/=/%3D/g; s/?/%3F/g; s/@/%40/g; s/\[/%5B/g; s/\]/%5D/g')
     curl -s --max-time 5 -X GET "${WEBHOOK_URL}/${enc_title}/${enc_body}" > /dev/null 2>&1
 }
 
@@ -368,6 +404,18 @@ switch_node() {
 # 通过本地代理测试连通性
 # 返回 0=正常 / 1=失败；TEST_DETAIL 为日志详情，TEST_REASON 为简短原因
 # =============================================================
+proxy_curl_test() {
+    local px="$1"
+    local url="$2"
+    curl -s -x "$px" -L \
+        --connect-timeout 5 --max-time 10 \
+        -H "Cache-Control: no-cache" \
+        -H "Pragma: no-cache" \
+        -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36" \
+        -o "$TEST_TMP" -w '%{http_code}' \
+        "$url" 2>/dev/null
+}
+
 test_proxy() {
     local url="$1"
     local sep='?'
@@ -375,14 +423,22 @@ test_proxy() {
     local probe="${url}${sep}_nd=$(date +%s)-$$"
 
     # 响应体落到文件，避免把整页 HTML 读进 shell 变量（大页面会拖慢/占用内存）
-    TEST_CODE=$(curl -s -x "$CURL_PROXY" -L \
-        --connect-timeout 5 --max-time 10 \
-        -H "Cache-Control: no-cache" \
-        -H "Pragma: no-cache" \
-        -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36" \
-        -o "$TEST_TMP" -w '%{http_code}' \
-        "$probe" 2>/dev/null)
+    TEST_CODE=$(proxy_curl_test "$CURL_PROXY" "$probe")
     local st=$?
+
+    # 连不上配置的本地代理时，尝试一次直连（不改配置，仅本次兜底）
+    if [ "$st" -eq 7 ] && [ -n "$CURL_PROXY" ]; then
+        if [ "${TUN_ENABLED:-0}" = "1" ]; then
+            log "连接本地代理 [${PROXY_DISPLAY}] 失败，TUN 已接管路由，尝试直连..." "$TASK_NAME"
+        else
+            log "连接本地代理 [${PROXY_DISPLAY}] 失败，尝试直连..." "$TASK_NAME"
+        fi
+        TEST_CODE=$(proxy_curl_test "" "$probe")
+        st=$?
+        if [ $st -eq 0 ]; then
+            log "直连成功：配置的代理端口不可用，请检查端口设置" "$TASK_NAME"
+        fi
+    fi
 
     TEST_DETAIL=""
     TEST_REASON=""
@@ -504,17 +560,9 @@ run_single_task() {
 }
 
 # =============================================================
-# 主入口
+# 主入口 / 防重入辅助
+# 锁文件仅在检测期间存在；调度器另有独立的 PID 文件供 Web 界面识别。
 # =============================================================
-# =============================================================
-# 防重入：pidfile 机制
-# 仅当锁文件中记录的 PID 仍然存活且确为本程序时，才视为“已有实例在跑”，
-# 此时当前进程静默退出（不打断、不强杀任何进程）。
-# 若锁文件不存在、PID 已死、或 PID 被复用为其他程序，则正常接管。
-# 任何退出路径（正常/报错/信号）都会通过 trap 清理锁文件，避免假死锁。
-# =============================================================
-PID_FILE="/var/run/network-detector.pid"
-
 is_our_process() {
     local pid="$1"
     [ -z "$pid" ] && return 1
@@ -527,32 +575,62 @@ is_our_process() {
     return 0
 }
 
-main() {
-    # 防重入检查：已有实例在跑则直接退出，避免进程堆积与误杀
+PID_FILE="/var/run/network-detector.pid"
+SCHED_PID_FILE="/var/run/network-detector.scheduler.pid"
+TRIGGER_FILE="/var/run/network-detector.trigger"
+
+LOCK_HELD=0
+SLEEP_PID=""
+
+cleanup_tmp_files() {
+    rm -f "$API_TMP" "$TEST_TMP" "$CAND_FILE" 2>/dev/null
+}
+
+# =============================================================
+# 每轮检测单独加锁：锁只覆盖一次检测，不覆盖中间的等待时间。
+# 这样手动「立即检测」和调度器不会互相堵死，也绝不会同时跑两轮。
+# 不使用 EXIT trap：busybox ash 子 shell 退出也会触发，会误删运行中的锁。
+# =============================================================
+acquire_lock() {
     if [ -f "$PID_FILE" ]; then
         local oldpid=$(cat "$PID_FILE" 2>/dev/null | tr -d ' \t')
         if is_our_process "$oldpid"; then
-            logger -t "network-detector" "已有实例在运行 (PID: $oldpid)，本次跳过"
-            log "已有实例在运行 (PID: ${oldpid})，本次跳过"
-            exit 0
+            log "已有检测正在运行 (PID: ${oldpid})，本次跳过"
+            return 1
         fi
-        # 锁文件残留（进程已死或非本程序），清理后接管
         rm -f "$PID_FILE" 2>/dev/null
     fi
-
-    # 写入自身 PID。锁文件不在 EXIT trap 中删除：
-    # busybox ash 在子 shell 结束时也会触发 EXIT trap，会把仍在运行的进程的锁删掉，
-    # 导致两轮检测并发执行、互相抢着切换节点。锁只由下一轮按 PID 存活检测来清理。
     echo $$ > "$PID_FILE"
-    trap 'rm -f "$API_TMP" "$TEST_TMP" "$CAND_FILE" 2>/dev/null' EXIT INT TERM
+    return 0
+}
 
+release_lock() {
+    [ "$LOCK_HELD" = "1" ] || return 0
+    local cur=$(cat "$PID_FILE" 2>/dev/null | tr -d ' \t')
+    [ "$cur" = "$$" ] && rm -f "$PID_FILE" 2>/dev/null
+    LOCK_HELD=0
+}
+
+on_term() {
+    [ -n "$SLEEP_PID" ] && kill "$SLEEP_PID" 2>/dev/null
+    release_lock
+    rm -f "$SCHED_PID_FILE" 2>/dev/null
+    cleanup_tmp_files
+    exit 0
+}
+
+# =============================================================
+# 执行一轮检测（调用方需先拿到锁）
+# =============================================================
+run_detection_round() {
     load_global_config
 
-    # 检查 Clash API 是否配置
     if [ -z "$CLASH_API" ]; then
         logger -t "network-detector" "Clash API 未配置，退出"
-        exit 1
+        return 1
     fi
+
+    resolve_local_proxy
 
     cleanup_old_logs
     log "========== 开始检测 =========="
@@ -582,6 +660,64 @@ main() {
     done
 
     log "========== 本轮检测结束 (任务:${task_count}, 失败:${fail_count}) =========="
+    return 0
 }
 
-main "$@"
+run_once() {
+    acquire_lock || return 0
+    LOCK_HELD=1
+    run_detection_round
+    local rc=$?
+    release_lock
+    cleanup_tmp_files
+    return $rc
+}
+
+# =============================================================
+# 顺序调度器：先立即跑一轮（开机/启动服务即检查），
+# 本轮结束后才开始计时，下一轮结束后再重新计时，永不重叠。
+# =============================================================
+get_interval_seconds() {
+    local ival=$(uci -q get network-detector.@main[0].interval_value 2>/dev/null)
+    case "$ival" in ''|*[!0-9]*) ival=5 ;; esac
+    [ "$ival" -lt 1 ] && ival=1
+    [ "$ival" -gt 1440 ] && ival=1440
+    echo $((ival * 60))
+}
+
+scheduler_loop() {
+    local secs=$(get_interval_seconds)
+    rm -f "$TRIGGER_FILE" 2>/dev/null
+    echo $$ > "$SCHED_PID_FILE"
+    trap on_term INT TERM
+    log "调度器已启动：每轮检测结束后等待 ${secs} 秒再开始下一轮"
+    while :; do
+        run_once
+
+        # 倒计时期间每秒检查一次「立即检测」触发文件：
+        # 收到请求就中断剩余等待，本轮检测完后重新按常规间隔计时
+        local waited=0
+        while [ $waited -lt $secs ]; do
+            if [ -f "$TRIGGER_FILE" ]; then
+                rm -f "$TRIGGER_FILE" 2>/dev/null
+                log "收到立即检测请求，跳过剩余倒计时"
+                break
+            fi
+            sleep 1 &
+            SLEEP_PID=$!
+            wait "$SLEEP_PID" 2>/dev/null
+            SLEEP_PID=""
+            waited=$((waited + 1))
+        done
+    done
+}
+
+case "$1" in
+    --loop|--daemon)
+        scheduler_loop
+        ;;
+    *)
+        trap on_term INT TERM
+        run_once
+        ;;
+esac

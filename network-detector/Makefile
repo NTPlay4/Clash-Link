@@ -8,7 +8,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=network-detector
-PKG_VERSION:=1.0.44
+PKG_VERSION:=1.0.57
 PKG_RELEASE:=1
 
 PKG_LICENSE:=GPL-2.0
@@ -83,6 +83,8 @@ if [ "$${1}" != "upgrade" ]; then
         sed -i '/network-detector/d' /etc/crontabs/root && /etc/init.d/cron restart 2>/dev/null
     fi
     rm -f /var/run/network-detector.pid
+    rm -f /var/run/network-detector.scheduler.pid
+    rm -f /var/run/network-detector.trigger
     rm -f /var/log/network-detector.log
     rm -f /var/lib/network-detector/counters
 fi

@@ -8,7 +8,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=luci-app-network-detector
-PKG_VERSION:=1.0.44
+PKG_VERSION:=1.0.57
 PKG_RELEASE:=1
 
 PKG_LICENSE:=GPL-2.0

@@ -14,10 +14,10 @@
   - 策略组下拉选择（自动从 Clash API 拉取）
   - Secret 一键获取（点击按钮从 OpenClash 配置自动填入）
   - 日志实时刷新、一键清除、一键下载
-  - 立即检测按钮（30 秒冷却）
+  - 立即检测按钮（30 秒冷却，会中断当前倒计时，检测完成后重新开始常规计时）
   - 检测任务可排序（上移/下移）
   - 当日切换/失败次数统计（自动每日重置）
-- **定时运行**：通过 cron `*/N` 分钟调度，启动时自动杀死残留进程避免堆积
+- **顺序定时**：由 procd 托管调度器，启动服务/开机立即检测一轮，本轮结束后才开始倒计时，绝不重叠；服务禁用即停止定时器，不再使用 cron
 - **智能失败分类**：区分「无法连接」和「被封」两种失败原因
 - **简洁通知**：恢复通知区分失败原因，全部失败通知保留起因
 
@@ -120,8 +120,7 @@ d:/openwrt/
 |------|------|--------|
 | `api_url` | Clash 外部控制 API 地址 | `http://127.0.0.1:9090` |
 | `secret` | API 密钥（点击按钮从 OpenClash 获取） | (空) |
-| `proxy_type` | 代理协议类型 (`http`/`socks5`) | `http` |
-| `local_proxy` | 本地代理地址 | `127.0.0.1:7890` |
+| (自动) | 检测流量走向由 Clash API 自动判定：TUN 模式直连，否则使用 mixed/http/socks 端口，无需配置 | — |
 
 ### Webhook 通知 (webhook)
 
@@ -155,6 +154,17 @@ d:/openwrt/
 | `GET /detectsecret` | 自动检测 OpenClash Secret |
 | `GET /downloadlog` | 下载完整日志文件 |
 | `GET /counters` | 获取当日切换/失败计数 (JSON) |
+
+## 打包
+
+- OpenWrt 24.10 及更早版本（ipk/opkg）：`powershell -ExecutionPolicy Bypass -File .\build.ps1`
+- OpenWrt 25.12+（APK v3/apk-tools 3.x）：需要 WSL，`powershell -ExecutionPolicy Bypass -File .\build-apk.ps1`（自动下载 Alpine 根文件系统并用 `apk mkpkg` 构建）
+
+APK 安装：
+
+```sh
+apk add --allow-untrusted ./luci-app-network-detector_1.0.57-r1_all.apk
+```
 
 ## 依赖
 

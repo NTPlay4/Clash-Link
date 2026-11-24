@@ -29,7 +29,7 @@ o = s:option(Value, "interval_value", translate("检测间隔"))
 o.default = "5"
 o.datatype = "uinteger"
 o.rmempty = false
-o.description = translate("设置每隔多少分钟自动检测一次。默认 5 分钟，最小 1 分钟")
+o.description = translate("每轮检测结束后等待多少分钟再开始下一轮（避免重叠）；启动服务或开机时立即检测一次。默认 5 分钟")
 
 o = s:option(Value, "log_retention_days", translate("日志保留天数"))
 o.default = "3"
@@ -60,13 +60,22 @@ o:value("http", "HTTP")
 o:value("socks5", "SOCKS5")
 o.default = "http"
 o.rmempty = false
-o.description = translate("选择本地代理协议类型，需与 Clash 设置一致")
+o.description = translate("检测使用的本地代理类型；API 不可读或需要指定端口时以此配置为准")
 
 o = s:option(Value, "local_proxy", translate("代理地址"))
 o.default = "127.0.0.1:7890"
 o.placeholder = "127.0.0.1:7890"
 o.rmempty = false
-o.description = translate("本地代理 IP:端口，HTTP 和 SOCKS5 共用此地址")
+o.description = translate("检测使用的本地代理 IP:端口；脚本不会自动修改此值")
+
+o = s:option(Value, "proxy_user", translate("代理认证用户名"))
+o.rmempty = true
+o.description = translate("本地代理开启 Basic 认证时手动填写；留空表示不使用代理认证")
+
+o = s:option(Value, "proxy_pass", translate("代理认证密码"))
+o.password = true
+o.rmempty = true
+o.description = translate("本地代理开启 Basic 认证时手动填写；留空表示不使用代理认证")
 
 -- =============================================================
 -- Webhook 通知设置
@@ -363,22 +372,22 @@ enh.value = [[<script type="text/javascript">
     var _secBtnDone=false;
     function setupSecretBtn(){
         if(_secBtnDone) return;
-        var secInput=document.querySelector('input[id*="secret"][type="password"],input[name*="secret"][type="password"]');
+        var secInput=document.querySelector('input[id*="secret"],input[name*="secret"]');
         if(!secInput) return;
-        _secBtnDone=true;
 
-        // 创建「自动获取」按钮
+        // 插回 Secret 输入框所在单元格的右侧（原位置）
         var btn=document.createElement('button');
         btn.type='button';
         btn.className='cbi-button cbi-button-apply';
         btn.textContent='\u81ea\u52a8\u83b7\u53d6';  // 自动获取
         btn.style.cssText='margin-left:6px;padding:2px 10px;font-size:12px;vertical-align:middle;';
-
-        // 插入到输入框所在容器末尾（密码显示/隐藏图标之后）
         var container = secInput.closest('td') || secInput.parentNode;
         container.appendChild(btn);
+        _secBtnDone=true;
+        bindSecretBtn(btn, secInput);
+    }
 
-        // 点击逻辑
+    function bindSecretBtn(btn, secInput){
         btn.addEventListener('click', function(e){
             e.preventDefault();
             if(btn.disabled) return;

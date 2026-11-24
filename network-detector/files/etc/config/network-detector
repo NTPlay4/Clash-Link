@@ -14,6 +14,8 @@ config clash 'clash'
     option secret ''
     option proxy_type 'http'
     option local_proxy '127.0.0.1:7890'
+    option proxy_user ''
+    option proxy_pass ''
 
 config webhook 'webhook'
     option notify_recover '0'

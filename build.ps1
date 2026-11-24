@@ -5,7 +5,7 @@ $ErrorActionPreference = "Stop"
 
 $OUTDIR = "$PSScriptRoot\output"
 $TMPDIR = "$PSScriptRoot\tmp_build"
-$VERSION = "1.0.44"
+$VERSION = "1.0.57"
 $RELEASE = "1"
 
 # 仅清理临时构建目录，保留 output 中的旧版本
@@ -292,6 +292,8 @@ fi
 
 # 仅卸载：清理运行时状态（安装文件由 opkg 自行删除，配置保留以便重装）
 rm -f /var/run/network-detector.pid
+rm -f /var/run/network-detector.scheduler.pid
+rm -f /var/run/network-detector.trigger
 rm -f /var/log/network-detector.log
 rm -f /var/lib/network-detector/counters
 rm -rf /tmp/luci-modulecache/ /tmp/luci-indexcache* 2>/dev/null

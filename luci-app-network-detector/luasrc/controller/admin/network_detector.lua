@@ -140,8 +140,16 @@ function action_run()
     local http = require("luci.http")
     http.prepare_content("application/json")
 
-    -- 后台运行检测脚本 (不阻塞请求)
-    os.execute("(/usr/bin/network-detector > /dev/null 2>&1) &")
+    -- 服务运行中：写触发文件，让调度器中断当前倒计时，立即跑一轮，
+    -- 并在该轮结束后重新开始常规倒计时；服务未运行则直接单次执行
+    luci.sys.call([[
+pid=$(cat /var/run/network-detector.scheduler.pid 2>/dev/null)
+if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && grep -q network-detector /proc/$pid/cmdline 2>/dev/null; then
+    touch /var/run/network-detector.trigger
+else
+    (/usr/bin/network-detector > /dev/null 2>&1) &
+fi
+]])
 
     http.write('{"status":"ok","message":"检测已启动"}')
 end
