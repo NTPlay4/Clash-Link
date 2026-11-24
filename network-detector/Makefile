@@ -8,7 +8,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=network-detector
-PKG_VERSION:=1.0.57
+PKG_VERSION:=1.0.58
 PKG_RELEASE:=1
 
 PKG_LICENSE:=GPL-2.0

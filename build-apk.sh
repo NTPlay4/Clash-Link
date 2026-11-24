@@ -4,7 +4,7 @@ set -e
 
 ROOT=/mnt/e/GitHub/Clash-Link-main
 WORK=/tmp/alpine-root/apkwork
-OUT="$ROOT/output/luci-app-network-detector_1.0.57-r1_all.apk"
+OUT="$ROOT/output/luci-app-network-detector_1.0.58-r1_all.apk"
 
 if [ ! -x /tmp/alpine-root/sbin/apk ]; then
     rm -rf /tmp/alpine-root
@@ -25,7 +25,7 @@ chmod 755 "$WORK/files/usr/bin/network-detector" \
 export SOURCE_DATE_EPOCH=0
 chroot /tmp/alpine-root /sbin/apk mkpkg \
     --info 'name:luci-app-network-detector' \
-    --info 'version:1.0.57-r1' \
+    --info 'version:1.0.58-r1' \
     --info 'description:Network Detector with LuCI UI - Clash proxy health check, auto node switching' \
     --info 'arch:noarch' \
     --info 'license:GPL-2.0' \

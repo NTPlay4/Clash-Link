@@ -2,7 +2,7 @@
 $ErrorActionPreference = "Stop"
 
 $ROOT = $PSScriptRoot
-$VERSION = "1.0.57"
+$VERSION = "1.0.58"
 $RELEASE = "1"
 $APKVER = "$VERSION-r$RELEASE"
 $STAGE = "$ROOT\tmp_apk\stage"

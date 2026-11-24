@@ -55,12 +55,9 @@ load_global_config() {
     fi
 
     # 代理认证只读取本插件配置项，不从 OpenClash 自动获取
-    # 日志中不显示密码
     if [ -n "$PROXY_USER" ]; then
-        PROXY_DISPLAY="${PROXY_USER}:***@${LOCAL_PROXY}"
         auth="$(url_encode "$PROXY_USER"):$(url_encode "$PROXY_PASS")@"
     else
-        PROXY_DISPLAY="${LOCAL_PROXY}"
         auth=""
     fi
 
@@ -158,30 +155,6 @@ api_call() {
         2*) return 0 ;;
         *)  return 1 ;;
     esac
-}
-
-# =============================================================
-# 每轮检测前检查 Clash 是否真的由 TUN 接管路由：
-# 只有 tun.enable=true 且 auto-route=true 才算 TUN 模式。
-# 端口完全以配置为准，不从 API 自动修改。
-# =============================================================
-resolve_local_proxy() {
-    TUN_ENABLED=0
-
-    if api_call GET "/configs"; then
-        local tun=$(grep -o '"tun":{[^}]*}' "$API_TMP" 2>/dev/null | head -1)
-        local enable=$(printf '%s' "$tun" | grep -o '"enable"[^,}]*' | grep -o 'true' | head -1)
-        local route=$(printf '%s' "$tun" | grep -o '"auto-route"[^,}]*' | grep -o 'true' | head -1)
-
-        if [ -n "$enable" ] && [ -n "$route" ]; then
-            TUN_ENABLED=1
-            log "检测到 Clash TUN 已接管路由，检测仍使用配置端口: ${PROXY_DISPLAY:-直连}"
-        else
-            log "Clash TUN 未接管路由 (enable=${enable:-false}, auto-route=${route:-false})，使用配置端口: ${PROXY_DISPLAY:-直连}"
-        fi
-    else
-        log "读取 Clash API /configs 失败 (HTTP ${API_CODE})，TUN 状态未知，使用配置端口: ${PROXY_DISPLAY:-直连}"
-    fi
 }
 
 # =============================================================
@@ -426,20 +399,6 @@ test_proxy() {
     TEST_CODE=$(proxy_curl_test "$CURL_PROXY" "$probe")
     local st=$?
 
-    # 连不上配置的本地代理时，尝试一次直连（不改配置，仅本次兜底）
-    if [ "$st" -eq 7 ] && [ -n "$CURL_PROXY" ]; then
-        if [ "${TUN_ENABLED:-0}" = "1" ]; then
-            log "连接本地代理 [${PROXY_DISPLAY}] 失败，TUN 已接管路由，尝试直连..." "$TASK_NAME"
-        else
-            log "连接本地代理 [${PROXY_DISPLAY}] 失败，尝试直连..." "$TASK_NAME"
-        fi
-        TEST_CODE=$(proxy_curl_test "" "$probe")
-        st=$?
-        if [ $st -eq 0 ]; then
-            log "直连成功：配置的代理端口不可用，请检查端口设置" "$TASK_NAME"
-        fi
-    fi
-
     TEST_DETAIL=""
     TEST_REASON=""
 
@@ -629,8 +588,6 @@ run_detection_round() {
         logger -t "network-detector" "Clash API 未配置，退出"
         return 1
     fi
-
-    resolve_local_proxy
 
     cleanup_old_logs
     log "========== 开始检测 =========="

@@ -120,7 +120,6 @@ d:/openwrt/
 |------|------|--------|
 | `api_url` | Clash 外部控制 API 地址 | `http://127.0.0.1:9090` |
 | `secret` | API 密钥（点击按钮从 OpenClash 获取） | (空) |
-| (自动) | 检测流量走向由 Clash API 自动判定：TUN 模式直连，否则使用 mixed/http/socks 端口，无需配置 | — |
 
 ### Webhook 通知 (webhook)
 
@@ -163,7 +162,7 @@ d:/openwrt/
 APK 安装：
 
 ```sh
-apk add --allow-untrusted ./luci-app-network-detector_1.0.57-r1_all.apk
+apk add --allow-untrusted ./luci-app-network-detector_1.0.58-r1_all.apk
 ```
 
 ## 依赖
