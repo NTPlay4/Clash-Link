@@ -145,7 +145,7 @@ task_hint.value = string.format(
     translate("策略组名称："), translate("Clash 中的代理策略组名称，需与配置文件一致"),
     translate("检测目标 URL："), translate("通过代理访问此 URL 来判定节点是否可用（如 Google、YouTube 等）"),
     translate("被封关键词："), translate("页面中出现此关键词则判定 IP 被封，即触发节点切换。留空则仅检查 HTTP 连通性"),
-    translate("最大尝试次数："), translate("连续切换节点的最大次数，超出后停止避免死循环（范围 1~20）")
+    translate("最大尝试次数："), translate("最多切换到多少个节点，每次切换后会校验是否生效并立即复测，达到上限即停止避免死循环（范围 1~20）")
 )
 
 -- =============================================================

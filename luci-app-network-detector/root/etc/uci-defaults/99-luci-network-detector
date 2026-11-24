@@ -85,15 +85,10 @@ if [ -z "$CURRENT_API" ]; then
     logger -t "network-detector" "首次安装，已自动填入 Clash API 地址: $CLASH_API"
 fi
 
-# =============================================================
-# 确保 cron 服务已启用
-# =============================================================
-/etc/init.d/cron enable 2>/dev/null
-
-# 启动 network-detector 服务（如果已安装核心包）
+# 只负责首次配置：启用服务由 postinst 完成，cron 和进程由 init 脚本的 start 处理，
+# 这里重复启动会造成两轮检测并发抢着切换节点
 if [ -x /etc/init.d/network-detector ]; then
     /etc/init.d/network-detector enable 2>/dev/null
-    /etc/init.d/network-detector start 2>/dev/null
 fi
 
 exit 0

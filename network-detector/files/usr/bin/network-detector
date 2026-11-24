@@ -7,6 +7,11 @@
 LOG_FILE="/var/log/network-detector.log"
 COUNTER_FILE="/var/lib/network-detector/counters"
 
+# 本次运行的临时文件（进程退出时由 trap 清理）
+API_TMP="/tmp/network-detector.api.$$"
+TEST_TMP="/tmp/network-detector.test.$$"
+CAND_FILE="/tmp/network-detector.cand.$$"
+
 # =============================================================
 # 从 UCI 读取全局配置
 # =============================================================
@@ -21,6 +26,8 @@ load_global_config() {
     : ${LOCAL_PROXY:="127.0.0.1:7890"}
     : ${PROXY_TYPE:="http"}
     : ${LOG_RETENTION:="3"}
+    # 去掉末尾斜杠，避免拼出 //proxies
+    CLASH_API="${CLASH_API%/}"
 
     # 自动检测 OpenClash Secret (运行时补救)
     if [ -z "$CLASH_SECRET" ]; then
@@ -74,6 +81,71 @@ is_nonempty_keyword() {
 # 转义字符串中 jsonfilter 表达式里的特殊字符 (双引号 / 反斜杠)
 json_escape() {
     echo "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
+
+# =============================================================
+# URL 编码（按字节 %XX 全量编码，兼容策略组名中的 emoji / 中文 / 空格）
+# 旧实现只把空格换成 %20，中文和 emoji 直接塞进 URL，PUT 请求常被 API 拒绝，
+# 表现为「一直切换但节点没变」。
+# =============================================================
+url_encode() {
+    local hex
+    hex=$(printf '%s' "$1" | od -An -tx1 -v 2>/dev/null | tr -d ' \n')
+    case "$hex" in
+        ''|*[!0-9a-fA-F]*)
+            # 极简固件可能没有 od，用 awk 逐字节转十六进制
+            hex=$(printf '%s' "$1" | LC_ALL=C awk '
+                BEGIN { for (i = 0; i < 256; i++) ord[sprintf("%c", i)] = i }
+                { for (i = 1; i <= length($0); i++) printf "%02x", ord[substr($0, i, 1)] }' 2>/dev/null)
+            ;;
+    esac
+    case "$hex" in
+        ''|*[!0-9a-fA-F]*)
+            # 最后兜底：只编码空格和常见特殊字符，UTF-8 字节原样保留
+            printf '%s' "$1" | sed -e 's/%/%25/g' -e 's/ /%20/g' -e 's/"/%22/g' \
+                -e 's/#/%23/g' -e 's/?/%3F/g' -e 's/&/%26/g' -e 's/+/%2B/g' -e "s/'/%27/g"
+            ;;
+        *) printf '%s' "$hex" | sed 's/../%&/g' ;;
+    esac
+}
+
+# 亚秒级休眠（busybox 支持小数秒时用小数，否则退回 1 秒）
+small_sleep() {
+    sleep 0.3 2>/dev/null || sleep 1
+}
+
+# =============================================================
+# Clash API 请求封装
+#   api_call <METHOD> <PATH> [JSON_BODY]
+# 响应体写入 $API_TMP，状态码写入 $API_CODE
+# 返回 0 表示 HTTP 2xx
+# =============================================================
+api_call() {
+    local method="$1"
+    local path="$2"
+    local body="$3"
+    local code
+
+    if [ -n "$body" ]; then
+        code=$(curl -s -o "$API_TMP" -w '%{http_code}' -X "$method" \
+            --connect-timeout 5 --max-time 10 \
+            -H "Authorization: Bearer ${CLASH_SECRET}" \
+            -H "Content-Type: application/json" \
+            --data-binary "$body" \
+            "${CLASH_API}${path}" 2>/dev/null)
+    else
+        code=$(curl -s -o "$API_TMP" -w '%{http_code}' -X "$method" \
+            --connect-timeout 5 --max-time 10 \
+            -H "Authorization: Bearer ${CLASH_SECRET}" \
+            "${CLASH_API}${path}" 2>/dev/null)
+    fi
+
+    API_CURL_ERR=$?
+    API_CODE="$code"
+    case "$code" in
+        2*) return 0 ;;
+        *)  return 1 ;;
+    esac
 }
 
 # =============================================================
@@ -185,7 +257,157 @@ counter_increment() {
 }
 
 # =============================================================
+# 读取策略组状态 -> GROUP_TYPE / CURRENT_NODE / NODES
+# 只取单个策略组，避免拉取整个 /proxies（路由上 jsonfilter 解析大 JSON 很慢）
+# 返回: 0=成功 1=认证/连接错误 2=策略组不存在或不可选
+# =============================================================
+fetch_group_state() {
+    # 优先使用旧版可用的路径形式（空格 %20、中文/emoji 原样），
+    # 若部分 Clash 版本不接受，再尝试全字节 %XX 编码
+    local path1="/proxies/$(printf '%s' "$PROXY_GROUP" | sed 's/ /%20/g')"
+    local path2="/proxies/$(url_encode "$PROXY_GROUP")"
+
+    if api_call GET "$path1"; then
+        GROUP_PATH="$path1"
+    elif [ "$API_CODE" = "401" ] || [ "$API_CODE" = "403" ]; then
+        log "错误: Clash API 认证失败 (HTTP ${API_CODE})，请检查网页配置中的 API 密钥是否正确" "$TASK_NAME"
+        return 1
+    elif [ "$path2" != "$path1" ] && api_call GET "$path2"; then
+        GROUP_PATH="$path2"
+        log "提示: 策略组名需使用完整 URL 编码，已自动切换编码方式" "$TASK_NAME"
+    else
+        case "$API_CODE" in
+            404)
+                log "错误: 找不到策略组 [${PROXY_GROUP}]" "$TASK_NAME"
+                return 2 ;;
+            000|"")
+                local hint=""
+                case "$API_CURL_ERR" in
+                    3)  hint="（curl 退出码 ${API_CURL_ERR}: URL 不合法）" ;;
+                    7)  hint="（curl 退出码 ${API_CURL_ERR}: 连接被拒绝，请确认 Clash 正在运行）" ;;
+                    23) hint="（curl 退出码 ${API_CURL_ERR}: 临时文件无法写入）" ;;
+                    28) hint="（curl 退出码 ${API_CURL_ERR}: 请求超时）" ;;
+                    *)  hint="（curl 退出码 ${API_CURL_ERR}）" ;;
+                esac
+                log "错误: 无法连接到 Clash API (${CLASH_API})${hint}" "$TASK_NAME"
+                ;;
+            *)
+                log "错误: 读取策略组失败 (HTTP ${API_CODE}): $(tr -d '\n' < "$API_TMP" 2>/dev/null | cut -c1-100)" "$TASK_NAME"
+                ;;
+        esac
+        return 1
+    fi
+
+    GROUP_TYPE=$(jsonfilter -e '@.type' < "$API_TMP" 2>/dev/null)
+    CURRENT_NODE=$(jsonfilter -e '@.now' < "$API_TMP" 2>/dev/null)
+    NODES=$(jsonfilter -e '@.all' < "$API_TMP" 2>/dev/null | grep -o '"[^"]*"' | sed 's/"//g')
+
+    if [ -z "$CURRENT_NODE" ] || [ -z "$NODES" ]; then
+        log "错误: 策略组 [${PROXY_GROUP}] 没有可选节点 (类型: ${GROUP_TYPE:-未知})" "$TASK_NAME"
+        return 2
+    fi
+    return 0
+}
+
+# =============================================================
+# 生成候选节点（写入 $CAND_FILE）
+# 从当前节点之后环形遍历；跳过信息类节点与内置策略，避免切到“剩余流量”之类的假节点
+# =============================================================
+build_candidates() {
+    local cur="$1"
+    printf '%s\n' "$NODES" | awk -v cur="$cur" '
+        NF { lines[++n] = $0 }
+        END {
+            start = 1
+            for (i = 1; i <= n; i++) if (lines[i] == cur) { start = i + 1; break }
+            for (k = 0; k < n; k++) {
+                idx = start + k
+                while (idx > n) idx -= n
+                name = lines[idx]
+                if (name == "" || name == cur) continue
+                if (name ~ /^(DIRECT|REJECT|REJECT-DROP|PASS|COMPATIBLE|GLOBAL|PROXY)$/) continue
+                if (name ~ /(剩余|流量|到期|过期|官网|套餐|订阅|续费|重置|客服|群组|邀请)/) continue
+                print name
+            }
+        }' > "$CAND_FILE"
+}
+
+# =============================================================
+# 切换节点并校验是否真正生效
+# 返回: 0=已生效 1=请求失败 2=提交成功但当前节点未变（被 url-test/fallback 等自动选路覆盖）
+# =============================================================
+switch_node() {
+    local target="$1"
+    local path="${GROUP_PATH:-/proxies/$(url_encode "$PROXY_GROUP")}"
+    local body="{\"name\":\"$(json_escape "$target")\"}"
+
+    if ! api_call PUT "$path" "$body"; then
+        log "切换请求失败 (HTTP ${API_CODE}, curl 退出码 ${API_CURL_ERR}): $(tr -d '\n' < "$API_TMP" 2>/dev/null | cut -c1-100)" "$TASK_NAME"
+        return 1
+    fi
+
+    # 轮询确认是否真的切过去了（最多约 2 秒）
+    local i=0 now=""
+    while [ $i -lt 6 ]; do
+        if api_call GET "$path"; then
+            now=$(jsonfilter -e '@.now' < "$API_TMP" 2>/dev/null)
+            if [ "$now" = "$target" ]; then
+                CURRENT_NODE="$now"
+                return 0
+            fi
+        fi
+        i=$((i + 1))
+        [ $i -lt 6 ] && small_sleep
+    done
+
+    [ -n "$now" ] && CURRENT_NODE="$now"
+    return 2
+}
+
+# =============================================================
+# 通过本地代理测试连通性
+# 返回 0=正常 / 1=失败；TEST_DETAIL 为日志详情，TEST_REASON 为简短原因
+# =============================================================
+test_proxy() {
+    local url="$1"
+    local sep='?'
+    case "$url" in *\?*) sep='&' ;; esac
+    local probe="${url}${sep}_nd=$(date +%s)-$$"
+
+    # 响应体落到文件，避免把整页 HTML 读进 shell 变量（大页面会拖慢/占用内存）
+    TEST_CODE=$(curl -s -x "$CURL_PROXY" -L \
+        --connect-timeout 5 --max-time 10 \
+        -H "Cache-Control: no-cache" \
+        -H "Pragma: no-cache" \
+        -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36" \
+        -o "$TEST_TMP" -w '%{http_code}' \
+        "$probe" 2>/dev/null)
+    local st=$?
+
+    TEST_DETAIL=""
+    TEST_REASON=""
+
+    if [ "$st" -ne 0 ]; then
+        TEST_REASON="无法连接"
+        TEST_DETAIL="无法连接 (curl 退出码: ${st})"
+        return 1
+    fi
+    if [ ! -s "$TEST_TMP" ]; then
+        TEST_REASON="无法连接"
+        TEST_DETAIL="无法连接 (响应为空, HTTP ${TEST_CODE})"
+        return 1
+    fi
+    if is_nonempty_keyword "$BANNED_KEYWORD" && grep -qF -- "$BANNED_KEYWORD" "$TEST_TMP" 2>/dev/null; then
+        TEST_REASON="被封"
+        TEST_DETAIL="IP 已被封禁 (匹配关键词: ${BANNED_KEYWORD})"
+        return 1
+    fi
+    return 0
+}
+
+# =============================================================
 # 执行单个检测任务
+# 流程: 先测当前节点 -> 生成候选 -> (切换 + 校验生效 + 立即复测) × N
 # =============================================================
 run_single_task() {
     local TASK_NAME="$1"
@@ -203,136 +425,81 @@ run_single_task() {
 
     log "开始检测 [${TEST_URL}] ..." "$TASK_NAME"
 
-    local ENCODED_GROUP=$(echo "$PROXY_GROUP" | sed 's/ /%20/g')
-
-    # 1. 获取所有代理数据（检测 HTTP 状态码以判断认证失败）
-    local API_RESULT=$(curl -s -w "\nHTTP_STATUS:%{http_code}" --connect-timeout 5 --max-time 8 \
-        -H "Authorization: Bearer ${CLASH_SECRET}" \
-        "${CLASH_API}/proxies")
-    local HTTP_CODE=$(echo "$API_RESULT" | grep -oP 'HTTP_STATUS:\K\d+')
-    local ALL_PROXIES=$(echo "$API_RESULT" | sed '/^HTTP_STATUS:/d')
-
-    if [ -z "$ALL_PROXIES" ]; then
-        log "错误: 无法连接到 Clash API (${CLASH_API})" "$TASK_NAME"
+    if ! fetch_group_state; then
         return 1
     fi
 
-    if [ "$HTTP_CODE" = "401" ] || [ "$HTTP_CODE" = "403" ]; then
-        log "错误: Clash API 认证失败 (HTTP ${HTTP_CODE})，请检查网页配置中的 API 密钥是否正确" "$TASK_NAME"
-        return 1
-    fi
-
-    # 使用 jsonfilter 解析 JSON (转义策略组名中的特殊字符)
-    local ESCAPED_GROUP=$(json_escape "$PROXY_GROUP")
-    local CURRENT_NODE=$(echo "$ALL_PROXIES" | jsonfilter -e "@.proxies[\"${ESCAPED_GROUP}\"].now" 2>/dev/null)
-    local NODES_JSON=$(echo "$ALL_PROXIES" | jsonfilter -e "@.proxies[\"${ESCAPED_GROUP}\"].all" 2>/dev/null)
-
-    if [ -z "$CURRENT_NODE" ] || [ -z "$NODES_JSON" ]; then
-        log "错误: 找不到策略组 [${PROXY_GROUP}]" "$TASK_NAME"
-        return 1
-    fi
-
-    # 将所有节点提取为列表
-    local NODES=$(echo "$NODES_JSON" | grep -o '"[^"]*"' | sed 's/"//g')
-
-    # 输出当前选中节点
     log "策略组 [${PROXY_GROUP}] 当前节点: ${CURRENT_NODE}" "$TASK_NAME"
 
-    local try_count=0
-    local switched=0
-    local prev_node=""
+    # Clash Meta 的 Selector/URLTest/Fallback 均支持 PUT 指定节点，统一尝试切换并校验
+    local prev_node="$CURRENT_NODE"
     local first_fail_reason=""
+    local attempt=0
 
-    while [ $try_count -lt $MAX_TRIES ]; do
-        log "尝试访问 (第 $((try_count + 1))/${MAX_TRIES} 次)..." "$TASK_NAME"
+    # ---- 1. 先测当前节点 ----
+    log "尝试访问 (第 1/${MAX_TRIES} 次)..." "$TASK_NAME"
+    if test_proxy "$TEST_URL"; then
+        log "访问正常，无需切换" "$TASK_NAME"
+        return 0
+    fi
+    log "${TEST_DETAIL}" "$TASK_NAME"
+    first_fail_reason="$TEST_REASON"
+    log "当前节点 [${CURRENT_NODE}] 判定失效 (${TEST_REASON})" "$TASK_NAME"
 
-        # 动态时间戳防止缓存
-        local RANDOM_URL="${TEST_URL}?_nocache=$(date +%s)"
+    # ---- 2. 生成候选节点 ----
+    build_candidates "$CURRENT_NODE"
+    local total=$(grep -c . "$CAND_FILE" 2>/dev/null)
+    case "$total" in ''|*[!0-9]*) total=0 ;; esac
 
-        local HTML_CONTENT=$(curl -s -x "$CURL_PROXY" -L --connect-timeout 8 --max-time 15 \
-            -H "Cache-Control: no-cache" \
-            -H "Pragma: no-cache" \
-            "$RANDOM_URL")
-        local CURL_STATUS=$?
+    if [ "$total" -eq 0 ]; then
+        log "策略组内没有其他可切换节点，无法切换" "$TASK_NAME"
+        counter_increment "$TASK_NAME" "fail"
+        send_webhook_notification "allfail" "${TASK_NAME} 全部失败" "策略组 [${PROXY_GROUP}] 无其他可用节点，起因: ${first_fail_reason}"
+        return 1
+    fi
 
-        # 判定是否失败
-        local FAILED=0
-        local FAIL_REASON=""
-        if [ $CURL_STATUS -ne 0 ] || [ -z "$HTML_CONTENT" ]; then
-            log "无法连接 (curl 退出码: ${CURL_STATUS})" "$TASK_NAME"
-            FAILED=1
-            FAIL_REASON="无法连接"
-        elif is_nonempty_keyword "$BANNED_KEYWORD" && echo "$HTML_CONTENT" | grep -qF "$BANNED_KEYWORD"; then
-            log "IP 已被封禁 (匹配关键词: ${BANNED_KEYWORD})" "$TASK_NAME"
-            FAILED=1
-            FAIL_REASON="被封"
-        fi
+    # ---- 3. 逐个切换 + 校验 + 立即复测 ----
+    local i=1
+    local target=""
+    while [ $i -le "$total" ] && [ $attempt -lt "$MAX_TRIES" ]; do
+        target=$(sed -n "${i}p" "$CAND_FILE")
+        i=$((i + 1))
+        [ -z "$target" ] && continue
+        attempt=$((attempt + 1))
 
-        if [ $FAILED -eq 1 ]; then
-            # 记录本次失败类型（用于最终通知汇总）
-            [ -z "$first_fail_reason" ] && first_fail_reason="$FAIL_REASON"
-            # 重新获取当前节点（检测认证）
-            local API_RESULT_TEMP=$(curl -s -w "\nHTTP_STATUS:%{http_code}" --connect-timeout 5 --max-time 8 \
-                -H "Authorization: Bearer ${CLASH_SECRET}" \
-                "${CLASH_API}/proxies")
-            local HTTP_CODE_TEMP=$(echo "$API_RESULT_TEMP" | grep -oP 'HTTP_STATUS:\K\d+')
-            local ALL_PROXIES_TEMP=$(echo "$API_RESULT_TEMP" | sed '/^HTTP_STATUS:/d')
+        log "切换到节点: ${target}" "$TASK_NAME"
+        switch_node "$target"
+        case $? in
+            1)
+                # 请求本身失败（HTTP 错误/网络错误），本次不计入有效复测
+                continue ;;
+            2)
+                # URLTest 测速可能把节点改成了另一个：不跳过，改测 Clash 实际选中的节点
+                log "切换未生效，当前被策略组改选为 [${CURRENT_NODE}]（目标: ${target}），改测当前节点" "$TASK_NAME"
+                ;;
+        esac
 
-            if [ "$HTTP_CODE_TEMP" = "401" ] || [ "$HTTP_CODE_TEMP" = "403" ]; then
-                log "错误: Clash API 认证失败 (HTTP ${HTTP_CODE_TEMP})，中止切换" "$TASK_NAME"
-                [ $switched -eq 1 ] && send_webhook_notification "recover" "${TASK_NAME} 切换异常" "认证失败，已尝试切换节点但 API 无法连接"
-                return 1
-            fi
-
-            prev_node="$CURRENT_NODE"
-            CURRENT_NODE=$(echo "$ALL_PROXIES_TEMP" | jsonfilter -e "@.proxies[\"${ESCAPED_GROUP}\"].now" 2>/dev/null)
-
-            log "当前节点 [${CURRENT_NODE}] 判定失效 (${FAIL_REASON})" "$TASK_NAME"
-
-            # 选择下一个节点
-            local TARGET_NODE=$(echo "$NODES" | awk -v cur="$CURRENT_NODE" '
-                found { print $0; exit }
-                $0 == cur { found = 1 }
-            ')
-            if [ -z "$TARGET_NODE" ]; then
-                TARGET_NODE=$(echo "$NODES" | head -n 1)
-                log "已到末尾，从头开始" "$TASK_NAME"
-            fi
-
-            log "切换到节点: ${TARGET_NODE}" "$TASK_NAME"
-
-            curl -s --max-time 5 -X PUT \
-                -H "Authorization: Bearer ${CLASH_SECRET}" \
-                -H "Content-Type: application/json" \
-                -d "{\"name\":\"${TARGET_NODE}\"}" \
-                "${CLASH_API}/proxies/${ENCODED_GROUP}"
-
-            # 更新当前节点引用，后续恢复日志和 Webhook 通知依赖此变量
-            CURRENT_NODE="$TARGET_NODE"
-
-            # 记录已切换（不在此处通知，等下次成功访问后再通知）
-            switched=1
-            try_count=$((try_count + 1))
-            sleep 1
-        else
-            if [ $switched -eq 1 ]; then
-                local reason_text="${first_fail_reason:-失效}"
-                log "切换后访问恢复！[${prev_node}](${reason_text}) → [${CURRENT_NODE}]" "$TASK_NAME"
-                counter_increment "$TASK_NAME" "reconnect"
-                send_webhook_notification "recover" \
-                    "${TASK_NAME} 已恢复" \
-                    "节点 [${prev_node}] ${reason_text}，切换至 [${CURRENT_NODE}] 后访问正常"
-            else
-                log "访问正常，无需切换" "$TASK_NAME"
-            fi
+        log "尝试访问 (第 $((attempt + 1))/${MAX_TRIES} 次)..." "$TASK_NAME"
+        if test_proxy "$TEST_URL"; then
+            log "切换后访问恢复！[${prev_node}](${first_fail_reason}) → [${CURRENT_NODE}]" "$TASK_NAME"
+            counter_increment "$TASK_NAME" "reconnect"
+            send_webhook_notification "recover" \
+                "${TASK_NAME} 已恢复" \
+                "节点 [${prev_node}] ${first_fail_reason}，切换至 [${CURRENT_NODE}] 后访问正常"
             return 0
         fi
+
+        log "${TEST_DETAIL}" "$TASK_NAME"
+        prev_node="$CURRENT_NODE"
+        log "当前节点 [${CURRENT_NODE}] 判定失效 (${TEST_REASON})" "$TASK_NAME"
+
+        small_sleep
     done
 
     local reason_text="${first_fail_reason:-未知原因}"
-    log "已连续尝试 ${MAX_TRIES} 次，全部失败 (起因: ${reason_text})" "$TASK_NAME"
+    log "已依次切换 ${attempt} 个节点，全部失败 (起因: ${reason_text})" "$TASK_NAME"
     counter_increment "$TASK_NAME" "fail"
-    send_webhook_notification "allfail" "${TASK_NAME} 全部失败" "所有节点尝试 ${MAX_TRIES} 次均失败，起因: ${reason_text}，请检查网络或节点状态"
+    send_webhook_notification "allfail" "${TASK_NAME} 全部失败" "已依次尝试切换 ${attempt} 个节点仍失败，起因: ${reason_text}，请检查网络或节点状态"
     return 1
 }
 
@@ -366,15 +533,18 @@ main() {
         local oldpid=$(cat "$PID_FILE" 2>/dev/null | tr -d ' \t')
         if is_our_process "$oldpid"; then
             logger -t "network-detector" "已有实例在运行 (PID: $oldpid)，本次跳过"
+            log "已有实例在运行 (PID: ${oldpid})，本次跳过"
             exit 0
         fi
         # 锁文件残留（进程已死或非本程序），清理后接管
         rm -f "$PID_FILE" 2>/dev/null
     fi
 
-    # 写入自身 PID 并注册退出清理（防止任何路径下的假死锁）
+    # 写入自身 PID。锁文件不在 EXIT trap 中删除：
+    # busybox ash 在子 shell 结束时也会触发 EXIT trap，会把仍在运行的进程的锁删掉，
+    # 导致两轮检测并发执行、互相抢着切换节点。锁只由下一轮按 PID 存活检测来清理。
     echo $$ > "$PID_FILE"
-    trap 'rm -f "$PID_FILE" 2>/dev/null' EXIT INT TERM
+    trap 'rm -f "$API_TMP" "$TEST_TMP" "$CAND_FILE" 2>/dev/null' EXIT INT TERM
 
     load_global_config
 

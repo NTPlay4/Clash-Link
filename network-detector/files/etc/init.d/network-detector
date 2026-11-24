@@ -91,9 +91,10 @@ setup_cron() {
 
     : ${ival:="5"}
 
-    # 校验数值
+    # 校验数值（cron 分钟字段最大 59）
     case "$ival" in ''|*[!0-9]*) ival="5" ;; esac
     [ "$ival" -lt 1 ] && ival="1"
+    [ "$ival" -gt 59 ] && ival="59"
 
     local cronexpr="*/${ival} * * * *"
 

@@ -5,7 +5,7 @@ $ErrorActionPreference = "Stop"
 
 $OUTDIR = "$PSScriptRoot\output"
 $TMPDIR = "$PSScriptRoot\tmp_build"
-$VERSION = "1.0.37"
+$VERSION = "1.0.44"
 $RELEASE = "1"
 
 # 仅清理临时构建目录，保留 output 中的旧版本
@@ -257,8 +257,13 @@ Write-UnixFile -Path $postinst_path -Content @'
 # 清除 LuCI 模块缓存，确保前端页面加载最新版本
 rm -rf /tmp/luci-modulecache/ /tmp/luci-indexcache* 2>/dev/null
 
+[ -x /etc/init.d/network-detector ] || exit 0
+
 if [ "${1}" = "upgrade" ]; then
-    /etc/init.d/network-detector restart 2>/dev/null
+    # 只在之前已启用时重启，保留用户「已禁用」的状态
+    if ls /etc/rc.d/*network-detector* > /dev/null 2>&1; then
+        /etc/init.d/network-detector restart 2>/dev/null
+    fi
 else
     /etc/init.d/network-detector enable 2>/dev/null
     /etc/init.d/network-detector start 2>/dev/null
@@ -274,31 +279,22 @@ Write-UnixFile -Path $prerm_path -Content @'
 #!/bin/sh
 [ -n "${IPKG_INSTROOT}" ] && exit 0
 
-# 正常停止服务
-/etc/init.d/network-detector stop 2>/dev/null
-/etc/init.d/network-detector disable 2>/dev/null
+if [ -x /etc/init.d/network-detector ]; then
+    # 升级时只 stop，不 disable：否则 rc.d 自启链接被删，升级后无法开机启动
+    /etc/init.d/network-detector stop 2>/dev/null
+    [ "${1}" = "upgrade" ] || /etc/init.d/network-detector disable 2>/dev/null
+fi
 
 if [ "${1}" = "upgrade" ]; then
-    rm -f /usr/bin/network-detector
-    rm -f /etc/init.d/network-detector
-    rm -f /etc/uci-defaults/99-luci-network-detector
-    rm -f /usr/lib/lua/luci/controller/admin/network_detector.lua
-    rm -f /usr/lib/lua/luci/model/cbi/network_detector.lua
-    rm -rf /usr/lib/lua/luci/view/network_detector/
-    rm -rf /usr/share/network-detector/
-    rm -rf /tmp/luci-modulecache/ /tmp/luci-indexcache* 2>/dev/null
-else
-    rm -f /etc/config/network-detector
-    rm -f /usr/bin/network-detector
-    rm -f /etc/init.d/network-detector
-    rm -f /etc/uci-defaults/99-luci-network-detector
-    rm -f /usr/lib/lua/luci/controller/admin/network_detector.lua
-    rm -f /usr/lib/lua/luci/model/cbi/network_detector.lua
-    rm -rf /usr/lib/lua/luci/view/network_detector/
-    rm -rf /usr/share/network-detector/
-    rm -f /var/log/network-detector.log
-    rm -rf /tmp/luci-modulecache/ /tmp/luci-indexcache* 2>/dev/null
+    # opkg 会用新文件覆盖旧文件，这里不要删任何安装文件
+    exit 0
 fi
+
+# 仅卸载：清理运行时状态（安装文件由 opkg 自行删除，配置保留以便重装）
+rm -f /var/run/network-detector.pid
+rm -f /var/log/network-detector.log
+rm -f /var/lib/network-detector/counters
+rm -rf /tmp/luci-modulecache/ /tmp/luci-indexcache* 2>/dev/null
 exit 0
 '@
 
@@ -312,7 +308,7 @@ Build-IPK `
     -Version $VERSION `
     -Architecture "all" `
     -Section "luci" `
-    -Depends "libubox, curl, jsonfilter, luci-base" `
+    -Depends "curl, jsonfilter, luci-base" `
     -Description "Network Detector with LuCI UI - Clash proxy health check, auto node switching, webhook notification" `
     -SourceDir $merged `
     -PostinstScript $postinst_path `

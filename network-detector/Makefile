@@ -8,7 +8,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=network-detector
-PKG_VERSION:=1.0.1
+PKG_VERSION:=1.0.44
 PKG_RELEASE:=1
 
 PKG_LICENSE:=GPL-2.0
@@ -62,7 +62,9 @@ define Package/network-detector/postinst
 # 安装/升级后启用并启动（或重启）服务
 [ -n "$${IPKG_INSTROOT}" ] && exit 0
 if [ "$${1}" = "upgrade" ]; then
-    /etc/init.d/network-detector restart 2>/dev/null
+    if ls /etc/rc.d/*network-detector* > /dev/null 2>&1; then
+        /etc/init.d/network-detector restart 2>/dev/null
+    fi
 else
     /etc/init.d/network-detector enable
     /etc/init.d/network-detector start 2>/dev/null
@@ -72,14 +74,15 @@ endef
 
 define Package/network-detector/prerm
 #!/bin/sh
-# 停止服务；仅卸载时清理文件
+# 升级只 stop（保留自启链接）；卸载再 disable 并清理运行状态
 [ -n "$${IPKG_INSTROOT}" ] && exit 0
 /etc/init.d/network-detector stop 2>/dev/null
-/etc/init.d/network-detector disable
 if [ "$${1}" != "upgrade" ]; then
+    /etc/init.d/network-detector disable 2>/dev/null
     if [ -f /etc/crontabs/root ]; then
         sed -i '/network-detector/d' /etc/crontabs/root && /etc/init.d/cron restart 2>/dev/null
     fi
+    rm -f /var/run/network-detector.pid
     rm -f /var/log/network-detector.log
     rm -f /var/lib/network-detector/counters
 fi
